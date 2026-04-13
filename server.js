@@ -485,6 +485,11 @@ function createApp() {
     });
   });
 
+  // ========== Health Check ==========
+  app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', port: PORT, timestamp: new Date().toISOString() });
+  });
+
   // ========== Static & SPA fallback ==========
   app.use('/css', express.static(path.join(__dirname, 'css')));
   app.use('/js', express.static(path.join(__dirname, 'js')));

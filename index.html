@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OilBridge — EU Oil Marketplace | Sentari Holding BV</title>
+  <meta name="description" content="OilBridge is the premier European oil marketplace by Sentari Holding BV. Buy and sell crude oil, refined products, and more.">
+  <meta name="theme-color" content="#0d0f0e">
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛢️</text></svg>">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header" id="header">
+      <nav class="nav">
+        <a href="#home" class="nav-brand">
+          <svg class="nav-logo" viewBox="0 0 32 32" width="32" height="32">
+            <defs><linearGradient id="oil-grad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#e8a020"/><stop offset="100%" style="stop-color:#d4891a"/></linearGradient></defs>
+            <path d="M16 2 C16 2 8 12 8 20 C8 24.4 11.6 28 16 28 C20.4 28 24 24.4 24 20 C24 12 16 2 16 2Z" fill="url(#oil-grad)"/>
+            <path d="M14 18 C14 16 16 12 16 12 C16 12 18 16 18 18 C18 19.1 17.1 20 16 20 C14.9 20 14 19.1 14 18Z" fill="#0d0f0e" opacity="0.4"/>
+          </svg>
+          <span class="nav-brand-text">Oil<strong>Bridge</strong></span>
+        </a>
+
+        <div class="nav-links" id="nav-links">
+          <a href="#home" class="nav-link" data-i18n="nav_home">Home</a>
+          <a href="#listings" class="nav-link" data-i18n="nav_listings">Listings</a>
+          <a href="#place-listing" class="nav-link auth-only verified-only" data-i18n="nav_place_listing">Place Listing</a>
+          <a href="#matches" class="nav-link auth-only" data-i18n="nav_matches">My Matches</a>
+          <a href="#admin" class="nav-link admin-only" data-i18n="nav_admin">Admin</a>
+        </div>
+
+        <div class="nav-actions">
+          <select id="lang-select" class="lang-select" aria-label="Language">
+            <option value="en">EN</option>
+            <option value="nl">NL</option>
+            <option value="de">DE</option>
+            <option value="fr">FR</option>
+            <option value="pl">PL</option>
+            <option value="es">ES</option>
+          </select>
+
+          <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme">
+            <svg class="icon-sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+            </svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+            </svg>
+          </button>
+
+          <div id="auth-buttons" class="auth-buttons">
+            <a href="#login" class="btn btn-ghost btn-sm" data-i18n="nav_login">Login</a>
+            <a href="#register" class="btn btn-primary btn-sm" data-i18n="nav_register">Register</a>
+          </div>
+
+          <div id="user-menu" class="user-menu hidden">
+            <button class="user-menu-btn" id="user-menu-btn">
+              <span class="user-avatar" id="user-avatar">U</span>
+              <span class="user-name" id="user-name">User</span>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="user-dropdown" id="user-dropdown">
+              <a href="#profile" class="dropdown-item" data-i18n="nav_profile">Profile</a>
+              <a href="#matches" class="dropdown-item" data-i18n="nav_matches">My Matches</a>
+              <hr class="dropdown-divider">
+              <button class="dropdown-item" id="logout-btn" data-i18n="nav_logout">Logout</button>
+            </div>
+          </div>
+
+          <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Menu">
+            <span></span><span></span><span></span>
+          </button>
+        </div>
+      </nav>
+    </header>
+
+    <!-- Mobile Menu Overlay -->
+    <div class="mobile-overlay" id="mobile-overlay"></div>
+
+    <!-- Main Content -->
+    <main class="main" id="main-content"></main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="container">
+        <div class="footer-grid">
+          <div class="footer-brand">
+            <span class="nav-brand-text">Oil<strong>Bridge</strong></span>
+            <p class="footer-tagline" data-i18n="footer_tagline">The trusted EU oil marketplace</p>
+            <p class="footer-company">© 2026 Sentari Holding BV. All rights reserved.</p>
+          </div>
+          <div class="footer-links">
+            <h4 data-i18n="footer_platform">Platform</h4>
+            <a href="#listings" data-i18n="nav_listings">Listings</a>
+            <a href="#register" data-i18n="nav_register">Register</a>
+            <a href="#login" data-i18n="nav_login">Login</a>
+          </div>
+          <div class="footer-links">
+            <h4 data-i18n="footer_legal">Legal</h4>
+            <a href="#terms" data-i18n="footer_terms">Terms of Service</a>
+            <a href="#privacy" data-i18n="footer_privacy">Privacy Policy</a>
+            <a href="#nda" data-i18n="footer_nda">NDA Agreement</a>
+          </div>
+          <div class="footer-links">
+            <h4 data-i18n="footer_contact">Contact</h4>
+            <p>info@sentari.nl</p>
+            <p>Amsterdam, Netherlands</p>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Watermark Overlay -->
+  <canvas id="watermark-canvas" class="watermark-canvas"></canvas>
+
+  <!-- Onboarding Overlay -->
+  <div id="onboarding-overlay" class="onboarding-overlay hidden">
+    <div class="onboarding-backdrop" id="onboarding-backdrop"></div>
+    <div class="onboarding-tooltip" id="onboarding-tooltip">
+      <div class="onboarding-step-indicator" id="onboarding-step-indicator"></div>
+      <h3 class="onboarding-title" id="onboarding-title"></h3>
+      <p class="onboarding-desc" id="onboarding-desc"></p>
+      <div class="onboarding-actions">
+        <button class="btn btn-ghost btn-sm" id="onboarding-skip" data-i18n="onboarding_skip">Skip</button>
+        <div class="onboarding-nav">
+          <button class="btn btn-ghost btn-sm" id="onboarding-prev" data-i18n="onboarding_prev">Back</button>
+          <button class="btn btn-primary btn-sm" id="onboarding-next" data-i18n="onboarding_next">Next</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Modal Container -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal" id="modal">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-title"></h3>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <script src="js/i18n.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

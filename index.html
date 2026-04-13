@@ -3,9 +3,98 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OilBridge — EU Oil Marketplace | Sentari Holding BV</title>
-  <meta name="description" content="OilBridge is the premier European oil marketplace by Sentari Holding BV. Buy and sell crude oil, refined products, and more.">
+
+  <!-- Primary Meta Tags -->
+  <title>OilBridge — Europe's Trusted Oil Marketplace | Buy & Sell Crude Oil, Diesel, Jet Fuel</title>
+  <meta name="description" content="OilBridge is Europe's leading B2B oil marketplace. Buy and sell crude oil, diesel, gasoline, jet fuel, LNG, and petrochemicals with KYC-verified traders across 27 EU countries.">
+  <meta name="keywords" content="oil marketplace, buy oil Europe, sell oil Europe, crude oil trading, diesel trading, EU oil market, B2B oil platform, bulk oil trading, petroleum marketplace, oil broker Europe">
+  <meta name="author" content="OilBridge">
+  <meta name="robots" content="index, follow">
+  <link rel="canonical" href="https://oilbridge.eu/">
+
+  <!-- Google Search Console Verification (replace content with your verification code) -->
+  <meta name="google-site-verification" content="REPLACE_WITH_YOUR_GSC_VERIFICATION_CODE">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://oilbridge.eu/">
+  <meta property="og:title" content="OilBridge — Europe's Trusted Oil Marketplace">
+  <meta property="og:description" content="Connect with KYC-verified buyers and sellers across the EU. Trade crude oil, diesel, jet fuel, LNG, and more on a secure, transparent platform.">
+  <meta property="og:image" content="https://oilbridge.eu/assets/og-image.png">
+  <meta property="og:site_name" content="OilBridge">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:locale:alternate" content="nl_NL">
+  <meta property="og:locale:alternate" content="de_DE">
+  <meta property="og:locale:alternate" content="fr_FR">
+  <meta property="og:locale:alternate" content="pl_PL">
+  <meta property="og:locale:alternate" content="es_ES">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:url" content="https://oilbridge.eu/">
+  <meta name="twitter:title" content="OilBridge — Europe's Trusted Oil Marketplace">
+  <meta name="twitter:description" content="Connect with KYC-verified buyers and sellers across the EU. Trade crude oil, diesel, jet fuel, LNG, and more.">
+  <meta name="twitter:image" content="https://oilbridge.eu/assets/og-image.png">
+
+  <!-- Theme & Appearance -->
   <meta name="theme-color" content="#0d0f0e">
+  <meta name="msapplication-TileColor" content="#0d0f0e">
+
+  <!-- Structured Data: JSON-LD (Organization + WebSite + Marketplace) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": "https://oilbridge.eu/#organization",
+        "name": "OilBridge",
+        "url": "https://oilbridge.eu",
+        "description": "Europe's trusted B2B oil marketplace connecting verified buyers and sellers across 27 EU countries.",
+        "contactPoint": {
+          "@type": "ContactPoint",
+          "email": "contact@oilbridge.eu",
+          "contactType": "customer service",
+          "availableLanguage": ["English", "Dutch", "German", "French", "Polish", "Spanish"]
+        },
+        "areaServed": {
+          "@type": "Place",
+          "name": "European Union"
+        }
+      },
+      {
+        "@type": "WebSite",
+        "@id": "https://oilbridge.eu/#website",
+        "url": "https://oilbridge.eu",
+        "name": "OilBridge",
+        "publisher": { "@id": "https://oilbridge.eu/#organization" },
+        "inLanguage": ["en", "nl", "de", "fr", "pl", "es"]
+      },
+      {
+        "@type": "WebPage",
+        "@id": "https://oilbridge.eu/#homepage",
+        "url": "https://oilbridge.eu",
+        "name": "OilBridge — Europe's Trusted Oil Marketplace",
+        "description": "Buy and sell crude oil, diesel, gasoline, jet fuel, LNG, and petrochemicals with KYC-verified traders across the European Union.",
+        "isPartOf": { "@id": "https://oilbridge.eu/#website" },
+        "about": {
+          "@type": "Service",
+          "name": "OilBridge Oil Trading Platform",
+          "serviceType": "B2B Oil Marketplace",
+          "provider": { "@id": "https://oilbridge.eu/#organization" },
+          "areaServed": "European Union",
+          "description": "A secure online marketplace for buying and selling crude oil, refined petroleum products, and petrochemicals between verified European businesses.",
+          "offers": {
+            "@type": "Offer",
+            "description": "3.2% commission on successful trades",
+            "priceCurrency": "EUR"
+          }
+        }
+      }
+    ]
+  }
+  </script>
+
   <link rel="stylesheet" href="css/main.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛢️</text></svg>">
 </head>
@@ -28,6 +117,7 @@
           <a href="#listings" class="nav-link" data-i18n="nav_listings">Listings</a>
           <a href="#place-listing" class="nav-link auth-only verified-only" data-i18n="nav_place_listing">Place Listing</a>
           <a href="#matches" class="nav-link auth-only" data-i18n="nav_matches">My Matches</a>
+          <a href="#blog" class="nav-link">Blog</a>
           <a href="#admin" class="nav-link admin-only" data-i18n="nav_admin">Admin</a>
         </div>
 
@@ -94,8 +184,8 @@
           <div class="footer-links">
             <h4 data-i18n="footer_platform">Platform</h4>
             <a href="#listings" data-i18n="nav_listings">Listings</a>
+            <a href="#blog">Blog</a>
             <a href="#register" data-i18n="nav_register">Register</a>
-            <a href="#login" data-i18n="nav_login">Login</a>
           </div>
           <div class="footer-links">
             <h4 data-i18n="footer_legal">Legal</h4>

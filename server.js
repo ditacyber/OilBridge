@@ -394,6 +394,8 @@ function createApp() {
   app.use('/css', express.static(path.join(__dirname, 'css')));
   app.use('/js', express.static(path.join(__dirname, 'js')));
   app.use('/assets', express.static(path.join(__dirname, 'assets')));
+  app.get('/sitemap.xml', (req, res) => res.sendFile(path.join(__dirname, 'sitemap.xml')));
+  app.get('/robots.txt', (req, res) => res.type('text/plain').sendFile(path.join(__dirname, 'robots.txt')));
   app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
   return app;

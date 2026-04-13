@@ -15,6 +15,22 @@
   let store;
   const i18n = new I18n();
 
+  // === SEO: Dynamic per-page meta ===
+  function setPageMeta(title, description) {
+    const fullTitle = title ? title + ' | OilBridge' : "OilBridge — Europe's Trusted Oil Marketplace";
+    document.title = fullTitle;
+    const descMeta = document.querySelector('meta[name="description"]');
+    if (descMeta) descMeta.setAttribute('content', description || '');
+    const ogTitle = document.querySelector('meta[property="og:title"]');
+    if (ogTitle) ogTitle.setAttribute('content', fullTitle);
+    const ogDesc = document.querySelector('meta[property="og:description"]');
+    if (ogDesc) ogDesc.setAttribute('content', description || '');
+    const twTitle = document.querySelector('meta[name="twitter:title"]');
+    if (twTitle) twTitle.setAttribute('content', fullTitle);
+    const twDesc = document.querySelector('meta[name="twitter:description"]');
+    if (twDesc) twDesc.setAttribute('content', description || '');
+  }
+
   // === Sanitize ===
   function esc(str) {
     const d = document.createElement('div');
@@ -126,6 +142,7 @@
       admin: renderAdmin,
       terms: renderTerms,
       privacy: renderPrivacy,
+      blog: renderBlog,
     };
 
     const renderer = pages[route.page];
@@ -173,6 +190,7 @@
   // PAGE: Home
   // ============================================================
   async function renderHome(main) {
+    setPageMeta(null, "Europe's leading B2B oil marketplace. Buy and sell crude oil, diesel, gasoline, jet fuel, LNG, and petrochemicals with KYC-verified traders across 27 EU countries.");
     const user = store.getCurrentUser();
     let stats = { activeListings: 0, verifiedUsers: 0, estimatedRevenue: 0 };
     if (store.isAdmin()) {
@@ -253,6 +271,7 @@
   // PAGE: Listings
   // ============================================================
   async function renderListings(main) {
+    setPageMeta('Oil Listings — Buy & Sell Orders', 'Browse active buy and sell orders for crude oil, diesel, jet fuel, LNG, and more from verified European traders. Filter by oil type, price, and delivery location.');
     main.innerHTML = `
       <section class="page-section">
         <div class="container">
@@ -313,6 +332,7 @@
   // PAGE: Listing Detail
   // ============================================================
   async function renderListingDetail(main, listingId) {
+    setPageMeta('Listing Details', 'View oil listing details including quantity, price, delivery location, and commission breakdown.');
     const listing = await store.getListing(listingId);
     if (!listing || listing.error) {
       main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><h3>Listing not found</h3><a href="#listings" class="btn btn-primary">Back to Listings</a></div></div></div>`;
@@ -388,6 +408,7 @@
   // PAGE: Login
   // ============================================================
   function renderLogin(main) {
+    setPageMeta('Login', 'Sign in to your OilBridge account to access the EU oil marketplace, manage listings, and view trade matches.');
     main.innerHTML = `
       <div class="auth-page">
         <div class="auth-card">
@@ -436,6 +457,7 @@
   // PAGE: Register (Multi-step)
   // ============================================================
   function renderRegister(main) {
+    setPageMeta('Register — Join the EU Oil Marketplace', 'Create your OilBridge account to start trading oil across Europe. KYC verification, NDA protection, and 3.2% transparent commission on completed trades.');
     const steps = ['register_step_company','register_step_contact','register_step_kyc','register_step_nda','register_step_password'];
     let currentStep = 0;
     let formData = { documents: [] };
@@ -611,6 +633,7 @@
   // PAGE: Place Listing
   // ============================================================
   function renderPlaceListing(main) {
+    setPageMeta('Place a Listing', 'Create a buy or sell order for crude oil, diesel, gasoline, jet fuel, LNG, or other petroleum products on the OilBridge marketplace.');
     const user = store.getCurrentUser();
     if (!user || !store.isVerified()) { navigate('login'); return; }
 
@@ -694,6 +717,7 @@
   // PAGE: My Matches
   // ============================================================
   async function renderMatches(main) {
+    setPageMeta('My Matches', 'View and manage your matched oil trades. Accept matches to reveal counterparty contact details and complete transactions.');
     const user = store.getCurrentUser();
     if (!user) { navigate('login'); return; }
     const matches = await store.getMatches();
@@ -803,6 +827,7 @@
   // PAGE: Profile
   // ============================================================
   async function renderProfile(main) {
+    setPageMeta('My Profile', 'Manage your OilBridge account, company information, KYC documents, and trading activity.');
     const user = store.getCurrentUser();
     if (!user) { navigate('login'); return; }
     const userListings = await store.getListings({ userId: user.id, all: true });
@@ -869,6 +894,7 @@
   // PAGE: Admin Panel
   // ============================================================
   async function renderAdmin(main) {
+    setPageMeta('Admin Panel', 'OilBridge administration dashboard. Manage users, approve KYC applications, and monitor platform activity.');
     if (!store.isAdmin()) { navigate('home'); return; }
     const stats = await store.getStats();
 
@@ -979,7 +1005,343 @@
   // ============================================================
   // PAGE: Terms / Privacy
   // ============================================================
+  // ============================================================
+  // BLOG DATA & PAGES
+  // ============================================================
+  const BLOG_ARTICLES = [
+    {
+      slug: 'buy-oil-bulk-europe',
+      icon: '&#128230;',
+      tag: 'Buying Guide',
+      title: 'How to Buy Oil in Bulk in Europe',
+      excerpt: 'A comprehensive guide to purchasing crude oil, diesel, and refined petroleum products in bulk across the European Union.',
+      date: '2026-03-15',
+      readTime: '8 min read',
+      meta: {
+        title: 'How to Buy Oil in Bulk in Europe — Complete 2026 Guide',
+        description: 'Learn how to buy crude oil, diesel, and petroleum products in bulk across the EU. Covers sourcing, pricing, logistics, regulations, and how to use B2B oil marketplaces.'
+      },
+      body: `
+        <p>Purchasing oil in bulk across Europe is a complex but highly rewarding endeavour. Whether you are a refinery looking for crude feedstock, a fuel distributor sourcing diesel, or a manufacturer that needs naphtha for petrochemical processes, the European market offers significant opportunities — if you know how to navigate it.</p>
+
+        <h2>Understanding the European Oil Market</h2>
+        <p>The EU oil market is one of the largest in the world, with total consumption exceeding 10 million barrels per day. Key trading hubs include Rotterdam (the largest port in Europe), Antwerp, Hamburg, Le Havre, and Trieste. Prices are typically benchmarked against Brent Crude for crude oil, and Platts or Argus assessments for refined products.</p>
+        <p>Unlike commodity exchanges where standardised contracts trade, bulk physical oil transactions are negotiated bilaterally between buyer and seller. This is where B2B oil marketplaces like OilBridge provide significant value — connecting verified counterparties and streamlining the discovery process.</p>
+
+        <h2>Step 1: Define Your Requirements</h2>
+        <p>Before approaching the market, clearly define what you need:</p>
+        <ul>
+          <li><strong>Product specification:</strong> Crude oil (Brent, Urals, CPC Blend), refined products (EN 590 diesel, Euro 5 gasoline, Jet A-1), or petrochemicals (naphtha, fuel oil, LPG).</li>
+          <li><strong>Volume:</strong> Typical bulk lots range from 5,000 metric tons for refined products to 500,000+ barrels for crude.</li>
+          <li><strong>Delivery terms:</strong> FOB (Free on Board), CIF (Cost, Insurance, Freight), DES (Delivered Ex-Ship), or DAP (Delivered at Place).</li>
+          <li><strong>Delivery location:</strong> Name a specific port or tank farm. European buyers commonly take delivery at ARA (Amsterdam-Rotterdam-Antwerp), Mediterranean ports, or Baltic terminals.</li>
+          <li><strong>Delivery window:</strong> Specify the date range with tolerances (e.g., 15-20 May 2026, +/- 3 days).</li>
+        </ul>
+
+        <h2>Step 2: Find Verified Sellers</h2>
+        <p>This is where many buyers struggle. The physical oil market has historically been opaque, dominated by relationships built over decades. Traditional approaches include:</p>
+        <ul>
+          <li>Working with established trading houses (Vitol, Trafigura, Gunvor, Glencore)</li>
+          <li>Direct refinery offtake agreements</li>
+          <li>Broker networks</li>
+          <li>Industry conferences and trade shows</li>
+        </ul>
+        <p>However, modern B2B oil marketplaces are changing this landscape. Platforms like OilBridge pre-verify sellers through KYC (Know Your Customer) procedures, ensuring you deal only with legitimate, licensed entities. This dramatically reduces counterparty risk and eliminates the problem of dealing with intermediaries who do not actually have access to product.</p>
+
+        <h2>Step 3: Pricing and Negotiation</h2>
+        <p>Oil prices in Europe are typically quoted as a differential to a benchmark:</p>
+        <ul>
+          <li><strong>Crude oil:</strong> Dated Brent +/- premium/discount</li>
+          <li><strong>Diesel/Gasoil:</strong> ICE Gasoil futures + premium</li>
+          <li><strong>Jet fuel:</strong> Platts CIF NWE Jet assessment + premium</li>
+          <li><strong>Fuel oil:</strong> Platts 3.5% FOB Rotterdam assessment</li>
+        </ul>
+        <p>When negotiating, pay attention to the pricing basis date (5-day average, bill of lading date, etc.), payment terms (typically 30 days from B/L date via documentary letter of credit), and any quality premiums or discounts.</p>
+
+        <h2>Step 4: Due Diligence and Compliance</h2>
+        <p>EU regulations require thorough due diligence on your trading counterparties. Key compliance areas include:</p>
+        <ul>
+          <li><strong>Sanctions screening:</strong> Check all parties against EU, UN, and OFAC sanctions lists.</li>
+          <li><strong>Origin verification:</strong> Ensure crude oil origin complies with current EU sanctions and import restrictions.</li>
+          <li><strong>Environmental compliance:</strong> Verify product specifications meet EU environmental standards (sulfur limits, biofuel blend mandates).</li>
+          <li><strong>Tax documentation:</strong> Ensure proper excise duty documentation for refined products moving across EU borders.</li>
+        </ul>
+
+        <h2>Step 5: Logistics and Delivery</h2>
+        <p>Once terms are agreed, coordinate the physical delivery:</p>
+        <ul>
+          <li>Charter a vessel or book space on a scheduled tanker service</li>
+          <li>Appoint an independent inspector (SGS, Intertek, Saybolt) for quantity and quality verification at loading and discharge</li>
+          <li>Arrange insurance (marine cargo, P&I)</li>
+          <li>Prepare all customs and excise documentation</li>
+        </ul>
+
+        <h2>Why Use OilBridge?</h2>
+        <p>OilBridge simplifies this entire process by providing a single platform where you can browse sell orders from KYC-verified sellers, express interest, get matched automatically, and connect directly with counterparties. Our 3.2% commission is only charged on successfully completed transactions — there are no listing fees, subscription costs, or hidden charges.</p>
+
+        <blockquote>Ready to start buying oil in bulk? <a href="#register">Register on OilBridge</a> today and gain access to verified sellers across 27 EU countries.</blockquote>
+      `
+    },
+    {
+      slug: 'eu-oil-marketplace-guide-sme',
+      icon: '&#127970;',
+      tag: 'Industry Guide',
+      title: 'EU Oil Marketplace Guide for SME Companies',
+      excerpt: 'How small and medium-sized enterprises can access the European oil market using digital B2B marketplaces and level the playing field.',
+      date: '2026-03-22',
+      readTime: '10 min read',
+      meta: {
+        title: 'EU Oil Marketplace Guide for SME Companies — Access the Oil Market',
+        description: 'A guide for small and medium enterprises to access the European oil trading market. Learn how B2B oil marketplaces help SMEs compete with large trading houses.'
+      },
+      body: `
+        <p>For decades, the European oil market has been dominated by major trading houses and large energy conglomerates. Small and medium-sized enterprises (SMEs) — independent fuel distributors, regional refineries, manufacturing companies, and logistics firms — have often found it difficult to access competitive pricing and reliable supply without established trading relationships.</p>
+        <p>That dynamic is changing. Digital B2B oil marketplaces are democratising access to the physical oil market, giving SMEs the tools to discover counterparties, compare prices, and execute trades that were previously only available to the largest players.</p>
+
+        <h2>The SME Challenge in Oil Trading</h2>
+        <p>SMEs in the oil sector face several structural disadvantages:</p>
+        <ul>
+          <li><strong>Limited network:</strong> Without decades of relationship-building, SMEs have fewer trading contacts and often depend on a small number of suppliers, reducing their negotiating power.</li>
+          <li><strong>Information asymmetry:</strong> Major traders have access to proprietary market intelligence, vessel tracking data, and extensive analyst teams. SMEs often rely on publicly available Platts and Argus assessments.</li>
+          <li><strong>Credit constraints:</strong> Banks and counterparties require significant credit lines for oil trading. SMEs may struggle to obtain letters of credit at competitive rates.</li>
+          <li><strong>Compliance burden:</strong> EU KYC, anti-money laundering (AML), and sanctions compliance requirements are the same regardless of company size, creating a disproportionate administrative burden for smaller firms.</li>
+          <li><strong>Counterparty risk:</strong> Without a dedicated risk team, SMEs are more vulnerable to fraud, contract disputes, and non-performance.</li>
+        </ul>
+
+        <h2>How B2B Oil Marketplaces Help</h2>
+        <p>Modern oil trading platforms address these challenges directly:</p>
+
+        <h3>1. Counterparty Discovery</h3>
+        <p>Instead of relying on personal networks, SMEs can browse verified buy and sell orders from across Europe. A Polish fuel distributor can discover a French refinery selling diesel, or a Spanish manufacturer can find a German trader offering naphtha — connections that might never have formed through traditional channels.</p>
+
+        <h3>2. KYC Pre-Verification</h3>
+        <p>Platforms like OilBridge verify all participants through document checks, company registration validation, and NDA agreements before granting marketplace access. This means every counterparty you engage with has already passed a compliance screening, dramatically reducing your due diligence workload.</p>
+
+        <h3>3. Price Transparency</h3>
+        <p>By aggregating buy and sell orders on a single platform, marketplaces create price transparency that benefits smaller players. You can see what prices others are offering and make more informed trading decisions.</p>
+
+        <h3>4. Automated Matching</h3>
+        <p>Smart matching algorithms connect compatible buy and sell orders automatically. If you post a buy order for 10,000 MT of EN 590 diesel delivered to Gdansk, and a seller lists a compatible offer, the platform creates a match and facilitates the introduction.</p>
+
+        <h3>5. Reduced Transaction Costs</h3>
+        <p>Traditional oil brokers charge commissions of 5-15 cents per barrel, and the process involves multiple phone calls, emails, and intermediaries. Digital platforms streamline this to a single commission (OilBridge charges 3.2%) with a clear, transparent process.</p>
+
+        <h2>Getting Started as an SME</h2>
+        <p>Here is a practical roadmap for SMEs looking to start trading on an oil marketplace:</p>
+
+        <h3>Phase 1: Preparation (Week 1-2)</h3>
+        <ul>
+          <li>Gather your company registration documents, director ID, and proof of business address</li>
+          <li>Prepare your VAT registration and any relevant trading licences</li>
+          <li>Define your typical purchase/sale volumes and product specifications</li>
+          <li>Identify your preferred delivery ports or terminals</li>
+        </ul>
+
+        <h3>Phase 2: Registration and Verification (Week 2-3)</h3>
+        <ul>
+          <li>Register on the platform and complete the multi-step verification process</li>
+          <li>Upload KYC documents for review</li>
+          <li>Read and accept the NDA to protect your trading information</li>
+          <li>Wait for admin approval (typically 1-3 business days)</li>
+        </ul>
+
+        <h3>Phase 3: Market Exploration (Week 3-4)</h3>
+        <ul>
+          <li>Browse existing listings to understand current pricing and available products</li>
+          <li>Use filters to find products matching your specifications</li>
+          <li>Study the delivery locations and terms offered by different sellers</li>
+        </ul>
+
+        <h3>Phase 4: First Trade (Week 4+)</h3>
+        <ul>
+          <li>Place your first buy or sell listing with clear specifications</li>
+          <li>Express interest in compatible listings from other traders</li>
+          <li>When matched, review counterparty details and initiate direct negotiation</li>
+          <li>Agree final terms and execute the trade through your normal commercial process</li>
+        </ul>
+
+        <h2>EU Regulatory Framework for SME Oil Traders</h2>
+        <p>SMEs trading oil within the EU should be aware of several regulatory frameworks:</p>
+        <ul>
+          <li><strong>REACH Regulation:</strong> Chemical safety requirements for petroleum products</li>
+          <li><strong>Fuel Quality Directive (2009/30/EC):</strong> Specifications for petrol and diesel fuels</li>
+          <li><strong>Energy Taxation Directive:</strong> Minimum excise duty rates for energy products</li>
+          <li><strong>EU Emissions Trading System (ETS):</strong> Carbon cost implications for refineries and large consumers</li>
+          <li><strong>Anti-Money Laundering Directives:</strong> Due diligence obligations on business relationships</li>
+        </ul>
+
+        <h2>Success Stories</h2>
+        <p>Across Europe, SMEs are already using digital platforms to transform their oil trading operations. Independent fuel distributors in Poland are sourcing diesel directly from refineries in Germany and the Netherlands, bypassing traditional middlemen and saving 2-4 EUR per metric ton. Regional airlines are procuring jet fuel through marketplace platforms rather than through the traditional into-plane supply monopolies.</p>
+
+        <blockquote>OilBridge was built specifically for the European market, with multilingual support (EN, NL, DE, FR, PL, ES) and deep understanding of EU regulatory requirements. <a href="#register">Register your company</a> and start trading today.</blockquote>
+      `
+    },
+    {
+      slug: 'sell-surplus-oil-europe',
+      icon: '&#128200;',
+      tag: 'Selling Guide',
+      title: 'How to Sell Surplus Oil Stocks in Europe',
+      excerpt: 'Strategies for refineries, terminals, and traders to monetise excess oil inventory through European B2B marketplace channels.',
+      date: '2026-04-02',
+      readTime: '7 min read',
+      meta: {
+        title: 'How to Sell Surplus Oil Stocks in Europe — Monetise Excess Inventory',
+        description: 'Learn how to sell excess crude oil, diesel, gasoline, and other petroleum products in Europe. Strategies for refineries, terminals, and traders to find buyers fast.'
+      },
+      body: `
+        <p>Every refinery, terminal operator, and oil trader in Europe has faced the same challenge: you have surplus product that needs to move, and the clock is ticking. Storage costs accumulate daily, product quality can degrade over time, and market prices fluctuate constantly. Selling surplus oil stocks efficiently is not just about finding any buyer — it is about finding the right buyer at the best price in the shortest time.</p>
+
+        <h2>Why Surplus Oil Stocks Accumulate</h2>
+        <p>Surplus inventory in the European oil market typically arises from several scenarios:</p>
+        <ul>
+          <li><strong>Refinery overproduction:</strong> When a refinery run produces more of a specific product cut than the offtake agreements cover, the excess needs to find a spot market buyer.</li>
+          <li><strong>Contract cancellations:</strong> A buyer defaults or reduces their contractual volume, leaving the seller with uncommitted barrels.</li>
+          <li><strong>Seasonal demand shifts:</strong> Winter-grade diesel becomes surplus in spring; gasoline stocks build ahead of summer driving season.</li>
+          <li><strong>Specification changes:</strong> Regulatory changes (e.g., IMO 2020 sulfur cap) can render existing stocks less marketable in their current form.</li>
+          <li><strong>Strategic inventory management:</strong> Companies deliberately reduce storage holdings to free up working capital or tank capacity.</li>
+        </ul>
+
+        <h2>Traditional vs. Modern Selling Channels</h2>
+
+        <h3>Traditional Methods</h3>
+        <p>Historically, sellers relied on a combination of:</p>
+        <ul>
+          <li><strong>Direct phone calls</strong> to known buyers and trading houses</li>
+          <li><strong>Broker networks</strong> — relationships with 2-3 trusted brokers who circulate offers to their buyer lists</li>
+          <li><strong>Industry events</strong> — IP Week in London, European Petroleum Conference, APPEC</li>
+          <li><strong>Email blasts</strong> — sending product offers to contact lists</li>
+        </ul>
+        <p>These methods work but are slow, limited in reach, and dependent on personal relationships. If your regular buyers do not need product at that moment, you are stuck.</p>
+
+        <h3>Modern Marketplace Approach</h3>
+        <p>B2B oil marketplaces like OilBridge offer a fundamentally different approach. By listing your surplus product on a platform with verified buyers across 27 EU countries, you instantly expand your reach from a handful of contacts to the entire European market.</p>
+
+        <h2>Best Practices for Selling on OilBridge</h2>
+
+        <h3>1. Write Detailed Listings</h3>
+        <p>The more specific your listing, the faster it will attract serious buyers. Always include:</p>
+        <ul>
+          <li>Exact product specification (e.g., "EN 590 Diesel, CFPP -20C, sulfur max 10 ppm")</li>
+          <li>Precise quantity available (e.g., "15,000 MT +/- 5%")</li>
+          <li>Loading/delivery location with terminal name</li>
+          <li>Available delivery window</li>
+          <li>Pricing basis (fixed price or benchmark + differential)</li>
+          <li>Incoterms (FOB, CIF, DAP)</li>
+        </ul>
+
+        <h3>2. Price Competitively</h3>
+        <p>Review current listings on the platform to understand the competitive landscape. Pricing your surplus at a slight discount to prevailing market levels will generate faster interest. Remember that surplus stock has a carrying cost — a quick sale at a small discount often beats holding out for a premium that may never materialise.</p>
+
+        <h3>3. Respond Quickly to Matches</h3>
+        <p>When a buyer expresses interest and a match is created, respond promptly. In the oil market, prices move fast, and a buyer who is interested today may find alternative supply tomorrow. OilBridge notifications alert you immediately when a match occurs.</p>
+
+        <h3>4. Keep Multiple Listings Active</h3>
+        <p>If you regularly have surplus product, maintain active listings for different products and specifications. This maximises your visibility to potential buyers and increases the chance of automatic matching.</p>
+
+        <h2>Tax and Regulatory Considerations</h2>
+        <p>When selling oil products across EU borders, ensure proper handling of:</p>
+        <ul>
+          <li><strong>Excise duty:</strong> Products moving under duty suspension require EMCS (Excise Movement and Control System) documentation</li>
+          <li><strong>VAT:</strong> Intra-community supplies are zero-rated under the reverse charge mechanism, but proper documentation (proof of transport, valid VAT numbers) is essential</li>
+          <li><strong>Customs:</strong> Products imported from outside the EU may have different duty status</li>
+          <li><strong>Certificates of origin:</strong> Some buyers require specific origin documentation for compliance reasons</li>
+        </ul>
+
+        <h2>Optimising Your Surplus Strategy</h2>
+        <p>The most successful sellers on oil marketplaces treat the platform as a strategic channel, not just an emergency outlet. They:</p>
+        <ul>
+          <li>Maintain a consistent presence with regularly updated listings</li>
+          <li>Build a reputation for reliable product quality and delivery performance</li>
+          <li>Use marketplace pricing data to inform their broader trading strategy</li>
+          <li>Develop repeat relationships with buyers discovered through the platform</li>
+        </ul>
+
+        <blockquote>Have surplus oil stocks to sell? <a href="#register">Register on OilBridge</a>, list your products, and reach verified buyers across the entire European Union. Our 3.2% commission is only charged when a trade is successfully completed.</blockquote>
+      `
+    }
+  ];
+
+  function renderBlog(main, slug) {
+    if (slug) {
+      const article = BLOG_ARTICLES.find(a => a.slug === slug);
+      if (article) return renderBlogArticle(main, article);
+    }
+    return renderBlogIndex(main);
+  }
+
+  function renderBlogIndex(main) {
+    setPageMeta('Blog — Oil Trading Insights & Guides', 'Expert guides on buying and selling oil in Europe, EU marketplace strategies for SMEs, and tips for trading petroleum products across the European Union.');
+    main.innerHTML = `
+      <section class="page-section">
+        <div class="container">
+          <div class="section-header">
+            <h2>OilBridge Blog</h2>
+            <p>Expert insights, guides, and strategies for trading oil in the European market.</p>
+          </div>
+          <div class="blog-grid">
+            ${BLOG_ARTICLES.map(a => `
+              <div class="blog-card" onclick="window.location.hash='#blog/${a.slug}'">
+                <div class="blog-card-image">${a.icon}</div>
+                <div class="blog-card-body">
+                  <div class="blog-card-tag">${esc(a.tag)}</div>
+                  <h3 class="blog-card-title">${esc(a.title)}</h3>
+                  <p class="blog-card-excerpt">${esc(a.excerpt)}</p>
+                  <div class="blog-card-meta">
+                    <span>${formatDate(a.date)}</span>
+                    <span>${esc(a.readTime)}</span>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </section>`;
+  }
+
+  function renderBlogArticle(main, article) {
+    setPageMeta(article.meta.title, article.meta.description);
+
+    // Article-specific JSON-LD
+    const jsonLd = {
+      "@context": "https://schema.org",
+      "@type": "Article",
+      "headline": article.title,
+      "description": article.meta.description,
+      "datePublished": article.date,
+      "author": { "@type": "Organization", "name": "OilBridge" },
+      "publisher": { "@type": "Organization", "name": "OilBridge", "url": "https://oilbridge.eu" },
+      "mainEntityOfPage": "https://oilbridge.eu/#blog/" + article.slug
+    };
+
+    main.innerHTML = `
+      <section class="page-section">
+        <div class="container">
+          <div class="blog-article">
+            <a href="#blog" class="btn btn-ghost mb-24">&larr; Back to Blog</a>
+            <div class="blog-card-tag" style="margin-bottom:12px">${esc(article.tag)}</div>
+            <h1>${esc(article.title)}</h1>
+            <div class="article-meta">
+              <span>Published ${formatDate(article.date)}</span>
+              <span>${esc(article.readTime)}</span>
+              <span>By OilBridge</span>
+            </div>
+            <div class="article-body">${article.body}</div>
+            <div class="article-cta">
+              <h3>Ready to Start Trading?</h3>
+              <p>Join OilBridge and connect with verified oil traders across the European Union.</p>
+              <a href="#register" class="btn btn-primary btn-lg">Create Your Account</a>
+            </div>
+          </div>
+        </div>
+      </section>
+      <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`;
+  }
+
+  // ============================================================
+  // PAGE: Terms / Privacy
+  // ============================================================
   function renderTerms(main) {
+    setPageMeta('Terms of Service', 'OilBridge terms of service governing the use of the EU oil trading marketplace, commission structure, and liability.');
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
       <h2 class="mb-24">Terms of Service</h2>
       <div class="card" style="line-height:1.8;color:var(--text-secondary)">
@@ -992,6 +1354,7 @@
   }
 
   function renderPrivacy(main) {
+    setPageMeta('Privacy Policy', 'OilBridge privacy policy detailing data collection, GDPR compliance, and how we protect your information on the oil trading platform.');
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
       <h2 class="mb-24">Privacy Policy</h2>
       <div class="card" style="line-height:1.8;color:var(--text-secondary)">

@@ -514,5 +514,5 @@ function createApp() {
   initDatabase();
 
   const app = createApp();
-  app.listen(PORT, () => console.log(`OilBridge running on port ${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => console.log(`OilBridge running on 0.0.0.0:${PORT}`));
 })();

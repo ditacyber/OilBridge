@@ -1,6 +1,7 @@
 /* ============================================================
    OilBridge — Main Application
    Router, Pages, Events, Onboarding, Watermark
+   All page renderers are async (API-backed store).
    ============================================================ */
 
 (function () {
@@ -11,7 +12,7 @@
   const CURRENCIES = ['USD','EUR','GBP'];
   const EU_COUNTRIES = ['Austria','Belgium','Bulgaria','Croatia','Cyprus','Czech Republic','Denmark','Estonia','Finland','France','Germany','Greece','Hungary','Ireland','Italy','Latvia','Lithuania','Luxembourg','Malta','Netherlands','Poland','Portugal','Romania','Slovakia','Slovenia','Spain','Sweden'];
 
-  const store = new Store();
+  let store;
   const i18n = new I18n();
 
   // === Sanitize ===
@@ -107,7 +108,7 @@
   }
 
   // === Rendering ===
-  function render() {
+  async function render() {
     const route = getRoute();
     const main = document.getElementById('main-content');
     updateNav();
@@ -130,7 +131,7 @@
     const renderer = pages[route.page];
     if (renderer) {
       main.innerHTML = '';
-      renderer(main, route.param);
+      await renderer(main, route.param);
     } else {
       main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><div class="empty-state-icon">404</div><h3>Page not found</h3><p><a href="#home">Go home</a></p></div></div></div>`;
     }
@@ -138,7 +139,6 @@
     i18n.translatePage();
     window.scrollTo(0, 0);
 
-    // Onboarding check
     const user = store.getCurrentUser();
     if (user && !store.hasOnboarded(user.id) && route.page === 'home') {
       setTimeout(() => startOnboarding(), 500);
@@ -151,7 +151,6 @@
     const isVerified = store.isVerified();
     const route = getRoute();
 
-    // Auth visibility
     document.getElementById('auth-buttons').classList.toggle('hidden', !!user);
     document.getElementById('user-menu').classList.toggle('hidden', !user);
 
@@ -160,12 +159,10 @@
       document.getElementById('user-name').textContent = user.contactName || user.email;
     }
 
-    // Nav link visibility
     document.querySelectorAll('.auth-only').forEach(el => el.classList.toggle('hidden', !user));
     document.querySelectorAll('.verified-only').forEach(el => el.classList.toggle('hidden', !isVerified));
     document.querySelectorAll('.admin-only').forEach(el => el.classList.toggle('hidden', !isAdmin));
 
-    // Active state
     document.querySelectorAll('.nav-link').forEach(link => {
       const href = link.getAttribute('href').slice(1);
       link.classList.toggle('active', href === route.page);
@@ -175,9 +172,13 @@
   // ============================================================
   // PAGE: Home
   // ============================================================
-  function renderHome(main) {
-    const stats = store.getStats();
-    const listings = store.getListings().slice(0, 6);
+  async function renderHome(main) {
+    const user = store.getCurrentUser();
+    let stats = { activeListings: 0, verifiedUsers: 0, estimatedRevenue: 0 };
+    if (store.isAdmin()) {
+      stats = await store.getStats();
+    }
+    const listings = await store.getListings({ limit: 6 });
 
     main.innerHTML = `
       <section class="hero">
@@ -189,9 +190,9 @@
             <a href="#register" class="btn btn-secondary btn-lg" data-i18n="hero_cta_register">${esc(i18n.t('hero_cta_register'))}</a>
           </div>
           <div class="hero-stats">
-            <div class="hero-stat"><div class="hero-stat-value">${stats.activeListings}</div><div class="hero-stat-label" data-i18n="hero_stat_listings">${esc(i18n.t('hero_stat_listings'))}</div></div>
-            <div class="hero-stat"><div class="hero-stat-value">${stats.verifiedUsers}</div><div class="hero-stat-label" data-i18n="hero_stat_traders">${esc(i18n.t('hero_stat_traders'))}</div></div>
-            <div class="hero-stat"><div class="hero-stat-value">${formatCurrency(stats.estimatedRevenue / 0.032, 'EUR').split('.')[0]}</div><div class="hero-stat-label" data-i18n="hero_stat_volume">${esc(i18n.t('hero_stat_volume'))}</div></div>
+            <div class="hero-stat"><div class="hero-stat-value">${listings.length || 0}</div><div class="hero-stat-label" data-i18n="hero_stat_listings">${esc(i18n.t('hero_stat_listings'))}</div></div>
+            <div class="hero-stat"><div class="hero-stat-value">${stats.verifiedUsers || 0}</div><div class="hero-stat-label" data-i18n="hero_stat_traders">${esc(i18n.t('hero_stat_traders'))}</div></div>
+            <div class="hero-stat"><div class="hero-stat-value">${stats.estimatedRevenue ? formatCurrency(stats.estimatedRevenue / 0.032, 'EUR').split('.')[0] : '-'}</div><div class="hero-stat-label" data-i18n="hero_stat_volume">${esc(i18n.t('hero_stat_volume'))}</div></div>
             <div class="hero-stat"><div class="hero-stat-value">27</div><div class="hero-stat-label" data-i18n="hero_stat_countries">${esc(i18n.t('hero_stat_countries'))}</div></div>
           </div>
         </div>
@@ -226,9 +227,9 @@
   }
 
   function renderListingCard(listing) {
-    const seller = store.getUser(listing.userId);
+    const seller = listing.seller;
     return `
-      <div class="listing-card" data-listing-id="${esc(listing.id)}" onclick="window.location.hash='#listing-detail/${esc(listing.id)}'">
+      <div class="listing-card" onclick="window.location.hash='#listing-detail/${esc(listing.id)}'">
         <div class="listing-card-header">
           <span class="tag tag-${listing.type}">${esc(i18n.t('general_' + listing.type))}</span>
           <span class="listing-card-type">${esc(i18n.t(listing.oilType))}</span>
@@ -251,7 +252,7 @@
   // ============================================================
   // PAGE: Listings
   // ============================================================
-  function renderListings(main) {
+  async function renderListings(main) {
     main.innerHTML = `
       <section class="page-section">
         <div class="container">
@@ -281,15 +282,16 @@
         </div>
       </section>`;
 
-    function applyFilters() {
+    async function applyFilters() {
       const filters = {
         search: document.getElementById('filter-search').value,
         type: document.getElementById('filter-type').value,
         oilType: document.getElementById('filter-oil').value,
         sort: document.getElementById('filter-sort').value
       };
-      const listings = store.getListings(filters);
+      const listings = await store.getListings(filters);
       const container = document.getElementById('listings-container');
+      if (!container) return;
       if (!listings.length) {
         container.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="empty-state-icon">&#128270;</div><h3 data-i18n="no_listings">${esc(i18n.t('no_listings'))}</h3><p data-i18n="no_listings_desc">${esc(i18n.t('no_listings_desc'))}</p></div>`;
       } else {
@@ -297,11 +299,12 @@
       }
     }
 
-    document.getElementById('filter-search').addEventListener('input', debounce(applyFilters, 300));
-    document.getElementById('filter-type').addEventListener('change', applyFilters);
-    document.getElementById('filter-oil').addEventListener('change', applyFilters);
-    document.getElementById('filter-sort').addEventListener('change', applyFilters);
-    applyFilters();
+    const debouncedFilter = debounce(() => applyFilters(), 300);
+    document.getElementById('filter-search').addEventListener('input', debouncedFilter);
+    document.getElementById('filter-type').addEventListener('change', () => applyFilters());
+    document.getElementById('filter-oil').addEventListener('change', () => applyFilters());
+    document.getElementById('filter-sort').addEventListener('change', () => applyFilters());
+    await applyFilters();
   }
 
   function debounce(fn, ms) { let t; return function(...a) { clearTimeout(t); t = setTimeout(() => fn.apply(this, a), ms); }; }
@@ -309,10 +312,13 @@
   // ============================================================
   // PAGE: Listing Detail
   // ============================================================
-  function renderListingDetail(main, listingId) {
-    const listing = store.getListing(listingId);
-    if (!listing) { main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><h3>Listing not found</h3><a href="#listings" class="btn btn-primary">Back to Listings</a></div></div></div>`; return; }
-    const seller = store.getUser(listing.userId);
+  async function renderListingDetail(main, listingId) {
+    const listing = await store.getListing(listingId);
+    if (!listing || listing.error) {
+      main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><h3>Listing not found</h3><a href="#listings" class="btn btn-primary">Back to Listings</a></div></div></div>`;
+      return;
+    }
+    const seller = listing.seller;
     const user = store.getCurrentUser();
     const isOwn = user && user.id === listing.userId;
 
@@ -364,22 +370,16 @@
 
     const interestBtn = document.getElementById('express-interest-btn');
     if (interestBtn) {
-      interestBtn.addEventListener('click', () => {
-        // Create a match / express interest
-        const matchData = {
-          listingId: listing.id,
-          buyerId: listing.type === 'sell' ? user.id : listing.userId,
-          sellerId: listing.type === 'sell' ? listing.userId : user.id,
-          quantity: listing.quantity,
-          pricePerUnit: listing.price,
-          totalValue: listing.price * listing.quantity,
-          commission: listing.price * listing.quantity * store.COMMISSION_RATE,
-          currency: listing.currency
-        };
-        store.createMatch(matchData);
-        showToast(i18n.t('listing_interest_sent'), 'success');
+      interestBtn.addEventListener('click', async () => {
         interestBtn.disabled = true;
-        interestBtn.textContent = i18n.t('listing_interest_sent');
+        const result = await store.createMatch({ listingId: listing.id });
+        if (result && result.success) {
+          showToast(i18n.t('listing_interest_sent'), 'success');
+          interestBtn.textContent = i18n.t('listing_interest_sent');
+        } else {
+          showToast((result && result.error) || 'Failed to express interest', 'error');
+          interestBtn.disabled = false;
+        }
       });
     }
   }
@@ -409,20 +409,18 @@
             <span data-i18n="login_no_account">${esc(i18n.t('login_no_account'))}</span>
             <a href="#register" data-i18n="login_register_link">${esc(i18n.t('login_register_link'))}</a>
           </p>
-          <div class="divider mt-24">Demo Accounts</div>
+          <div class="divider mt-24">Admin Access</div>
           <div style="font-size:0.8rem;color:var(--text-muted);line-height:1.8">
-            <p><strong>Admin:</strong> admin@sentari.nl / Admin2024!</p>
-            <p><strong>Trader:</strong> hans@petrochemag.de / Trader2024!</p>
-            <p><strong>Trader:</strong> marie@euroraffinerie.fr / Trader2024!</p>
+            <p><strong>Admin:</strong> admin@oilbridge.eu / Admin2024!</p>
           </div>
         </div>
       </div>`;
 
-    document.getElementById('login-form').addEventListener('submit', (e) => {
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const email = document.getElementById('login-email').value.trim();
       const password = document.getElementById('login-password').value;
-      const result = store.login(email, password);
+      const result = await store.login(email, password);
       if (result.error) {
         const errEl = document.getElementById('login-error');
         errEl.textContent = i18n.t('login_error');
@@ -454,7 +452,6 @@
       const countryOptions = EU_COUNTRIES.map(c => `<option value="${esc(c)}" ${formData.companyCountry === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
 
       const stepContent = [
-        // Step 1: Company
         `<div class="form-group"><label class="form-label" data-i18n="register_company_name">${esc(i18n.t('register_company_name'))}</label><input type="text" class="form-input" id="reg-company-name" value="${esc(formData.companyName || '')}" required></div>
          <div class="form-row">
            <div class="form-group"><label class="form-label" data-i18n="register_company_reg">${esc(i18n.t('register_company_reg'))}</label><input type="text" class="form-input" id="reg-company-reg" value="${esc(formData.companyReg || '')}" required></div>
@@ -462,7 +459,6 @@
          </div>
          <div class="form-group"><label class="form-label" data-i18n="register_company_country">${esc(i18n.t('register_company_country'))}</label><select class="form-select" id="reg-company-country" required><option value="">Select country...</option>${countryOptions}</select></div>`,
 
-        // Step 2: Contact
         `<div class="form-group"><label class="form-label" data-i18n="register_contact_name">${esc(i18n.t('register_contact_name'))}</label><input type="text" class="form-input" id="reg-contact-name" value="${esc(formData.contactName || '')}" required></div>
          <div class="form-group"><label class="form-label" data-i18n="register_contact_email">${esc(i18n.t('register_contact_email'))}</label><input type="email" class="form-input" id="reg-contact-email" value="${esc(formData.email || '')}" required autocomplete="email"></div>
          <div class="form-row">
@@ -470,7 +466,6 @@
            <div class="form-group"><label class="form-label" data-i18n="register_contact_position">${esc(i18n.t('register_contact_position'))}</label><input type="text" class="form-input" id="reg-contact-position" value="${esc(formData.contactPosition || '')}"></div>
          </div>`,
 
-        // Step 3: KYC Documents
         `<h3 class="mb-16" data-i18n="register_kyc_title">${esc(i18n.t('register_kyc_title'))}</h3>
          <p class="text-muted mb-24" style="font-size:0.9rem" data-i18n="register_kyc_desc">${esc(i18n.t('register_kyc_desc'))}</p>
          <ul style="margin-bottom:24px;padding-left:20px;font-size:0.9rem;color:var(--text-secondary);line-height:2">
@@ -486,12 +481,11 @@
          </div>
          <div class="upload-file-list" id="upload-file-list">${formData.documents.map(d => `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(d)}</span><button class="file-remove" data-file="${esc(d)}">&times;</button></div>`).join('')}</div>`,
 
-        // Step 4: NDA
         `<h3 class="mb-16" data-i18n="register_nda_title">${esc(i18n.t('register_nda_title'))}</h3>
          <p class="text-muted mb-24" style="font-size:0.9rem" data-i18n="register_nda_desc">${esc(i18n.t('register_nda_desc'))}</p>
          <div class="nda-content">
            <h4>NON-DISCLOSURE AGREEMENT</h4>
-           <p>This Non-Disclosure Agreement ("Agreement") is entered into by and between Sentari Holding BV ("Company"), a company registered in the Netherlands, and the undersigned party ("Recipient").</p>
+           <p>This Non-Disclosure Agreement ("Agreement") is entered into by and between OilBridge ("Company") and the undersigned party ("Recipient").</p>
            <h4>1. Confidential Information</h4>
            <p>All information shared through the OilBridge platform, including but not limited to: trading data, pricing information, counterparty identities, transaction volumes, delivery schedules, and business strategies shall be considered Confidential Information.</p>
            <h4>2. Obligations</h4>
@@ -507,11 +501,9 @@
          </div>
          <label class="form-check mt-16"><input type="checkbox" id="nda-accept" ${formData.ndaAccepted ? 'checked' : ''}><span data-i18n="register_nda_accept">${esc(i18n.t('register_nda_accept'))}</span></label>`,
 
-        // Step 5: Password
         `<div class="form-group"><label class="form-label" data-i18n="register_password_label">${esc(i18n.t('register_password_label'))}</label><input type="password" class="form-input" id="reg-password" required autocomplete="new-password"><div class="form-hint" data-i18n="register_password_hint">${esc(i18n.t('register_password_hint'))}</div></div>
          <div class="form-group"><label class="form-label" data-i18n="register_password_confirm">${esc(i18n.t('register_password_confirm'))}</label><input type="password" class="form-input" id="reg-password-confirm" required autocomplete="new-password"></div>`
       ];
-
       return stepContent[currentStep] || '';
     }
 
@@ -519,15 +511,12 @@
       const container = document.getElementById('register-step-content');
       container.innerHTML = renderCurrentStep();
       document.getElementById('register-steps-bar').innerHTML = renderSteps();
-
-      // Prev/Next buttons
       document.getElementById('reg-prev-btn').classList.toggle('hidden', currentStep === 0);
       const nextBtn = document.getElementById('reg-next-btn');
       const submitBtn = document.getElementById('reg-submit-btn');
       nextBtn.classList.toggle('hidden', currentStep === steps.length - 1);
       submitBtn.classList.toggle('hidden', currentStep !== steps.length - 1);
 
-      // File upload handling
       if (currentStep === 2) {
         const zone = document.getElementById('upload-zone');
         const input = document.getElementById('file-input');
@@ -538,20 +527,16 @@
         input.addEventListener('change', (e) => handleFiles(e.target.files));
         document.querySelectorAll('.file-remove').forEach(btn => {
           btn.addEventListener('click', (e) => {
-            const fileName = e.target.dataset.file;
-            formData.documents = formData.documents.filter(d => d !== fileName);
+            formData.documents = formData.documents.filter(d => d !== e.target.dataset.file);
             renderForm();
           });
         });
       }
-
       i18n.translatePage();
     }
 
     function handleFiles(files) {
-      Array.from(files).forEach(f => {
-        if (!formData.documents.includes(f.name)) formData.documents.push(f.name);
-      });
+      Array.from(files).forEach(f => { if (!formData.documents.includes(f.name)) formData.documents.push(f.name); });
       renderForm();
     }
 
@@ -562,37 +547,22 @@
           formData.companyReg = document.getElementById('reg-company-reg').value.trim();
           formData.companyVat = document.getElementById('reg-company-vat').value.trim();
           formData.companyCountry = document.getElementById('reg-company-country').value;
-          if (!formData.companyName || !formData.companyReg || !formData.companyCountry) {
-            showToast('Please fill in all required fields.', 'error');
-            return false;
-          }
+          if (!formData.companyName || !formData.companyReg || !formData.companyCountry) { showToast('Please fill in all required fields.', 'error'); return false; }
           break;
         case 1:
           formData.contactName = document.getElementById('reg-contact-name').value.trim();
           formData.email = document.getElementById('reg-contact-email').value.trim();
           formData.contactPhone = document.getElementById('reg-contact-phone').value.trim();
           formData.contactPosition = document.getElementById('reg-contact-position').value.trim();
-          if (!formData.contactName || !formData.email) {
-            showToast('Please fill in all required fields.', 'error');
-            return false;
-          }
-          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
-            showToast('Please enter a valid email address.', 'error');
-            return false;
-          }
+          if (!formData.contactName || !formData.email) { showToast('Please fill in all required fields.', 'error'); return false; }
+          if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) { showToast('Please enter a valid email address.', 'error'); return false; }
           break;
         case 2:
-          if (formData.documents.length === 0) {
-            showToast('Please upload at least one KYC document.', 'error');
-            return false;
-          }
+          if (formData.documents.length === 0) { showToast('Please upload at least one KYC document.', 'error'); return false; }
           break;
         case 3:
           formData.ndaAccepted = document.getElementById('nda-accept').checked;
-          if (!formData.ndaAccepted) {
-            showToast('You must accept the NDA to continue.', 'error');
-            return false;
-          }
+          if (!formData.ndaAccepted) { showToast('You must accept the NDA to continue.', 'error'); return false; }
           break;
       }
       return true;
@@ -622,19 +592,18 @@
 
     document.getElementById('reg-prev-btn').addEventListener('click', () => { if (currentStep > 0) { currentStep--; renderForm(); } });
     document.getElementById('reg-next-btn').addEventListener('click', () => { if (saveStepData()) { currentStep++; renderForm(); } });
-    document.getElementById('reg-submit-btn').addEventListener('click', () => {
+    document.getElementById('reg-submit-btn').addEventListener('click', async () => {
       const pw = document.getElementById('reg-password').value;
       const pwConfirm = document.getElementById('reg-password-confirm').value;
       if (pw.length < 8) { showToast('Password must be at least 8 characters.', 'error'); return; }
       if (!/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) { showToast('Password must contain at least one uppercase letter and one number.', 'error'); return; }
       if (pw !== pwConfirm) { showToast('Passwords do not match.', 'error'); return; }
       formData.password = pw;
-      const result = store.createUser(formData);
-      if (result.error) { showToast(result.error, 'error'); return; }
+      const result = await store.createUser(formData);
+      if (result && result.error) { showToast(result.error, 'error'); return; }
       showToast(i18n.t('register_success'), 'success');
       navigate('login');
     });
-
     renderForm();
   }
 
@@ -672,48 +641,24 @@
             </div>
             <div class="form-group">
               <label class="form-label" data-i18n="place_oil_type">${esc(i18n.t('place_oil_type'))}</label>
-              <select class="form-select" id="pl-oil-type" required>
-                ${OIL_TYPES.map(o => `<option value="${o}">${esc(i18n.t(o))}</option>`).join('')}
-              </select>
+              <select class="form-select" id="pl-oil-type" required>${OIL_TYPES.map(o => `<option value="${o}">${esc(i18n.t(o))}</option>`).join('')}</select>
             </div>
             <div class="form-row">
-              <div class="form-group">
-                <label class="form-label" data-i18n="place_quantity">${esc(i18n.t('place_quantity'))}</label>
-                <input type="number" class="form-input" id="pl-quantity" min="1" required>
-              </div>
-              <div class="form-group">
-                <label class="form-label" data-i18n="place_unit">${esc(i18n.t('place_unit'))}</label>
-                <select class="form-select" id="pl-unit">${UNITS.map(u => `<option value="${u}">${esc(i18n.t(u))}</option>`).join('')}</select>
-              </div>
+              <div class="form-group"><label class="form-label" data-i18n="place_quantity">${esc(i18n.t('place_quantity'))}</label><input type="number" class="form-input" id="pl-quantity" min="1" required></div>
+              <div class="form-group"><label class="form-label" data-i18n="place_unit">${esc(i18n.t('place_unit'))}</label><select class="form-select" id="pl-unit">${UNITS.map(u => `<option value="${u}">${esc(i18n.t(u))}</option>`).join('')}</select></div>
             </div>
             <div class="form-row">
-              <div class="form-group">
-                <label class="form-label" data-i18n="place_price">${esc(i18n.t('place_price'))}</label>
-                <input type="number" class="form-input" id="pl-price" min="0.01" step="0.01" required>
-              </div>
-              <div class="form-group">
-                <label class="form-label" data-i18n="place_currency">${esc(i18n.t('place_currency'))}</label>
-                <select class="form-select" id="pl-currency">${CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
-              </div>
+              <div class="form-group"><label class="form-label" data-i18n="place_price">${esc(i18n.t('place_price'))}</label><input type="number" class="form-input" id="pl-price" min="0.01" step="0.01" required></div>
+              <div class="form-group"><label class="form-label" data-i18n="place_currency">${esc(i18n.t('place_currency'))}</label><select class="form-select" id="pl-currency">${CURRENCIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div>
             </div>
-            <div class="form-group">
-              <label class="form-label" data-i18n="place_delivery_location">${esc(i18n.t('place_delivery_location'))}</label>
-              <input type="text" class="form-input" id="pl-location" required placeholder="e.g. Rotterdam, Netherlands">
-            </div>
-            <div class="form-group">
-              <label class="form-label" data-i18n="place_delivery_date">${esc(i18n.t('place_delivery_date'))}</label>
-              <input type="date" class="form-input" id="pl-date" required>
-            </div>
-            <div class="form-group">
-              <label class="form-label" data-i18n="place_notes">${esc(i18n.t('place_notes'))}</label>
-              <textarea class="form-textarea" id="pl-notes" placeholder="${esc(i18n.t('place_notes_hint'))}"></textarea>
-            </div>
+            <div class="form-group"><label class="form-label" data-i18n="place_delivery_location">${esc(i18n.t('place_delivery_location'))}</label><input type="text" class="form-input" id="pl-location" required placeholder="e.g. Rotterdam, Netherlands"></div>
+            <div class="form-group"><label class="form-label" data-i18n="place_delivery_date">${esc(i18n.t('place_delivery_date'))}</label><input type="date" class="form-input" id="pl-date" required></div>
+            <div class="form-group"><label class="form-label" data-i18n="place_notes">${esc(i18n.t('place_notes'))}</label><textarea class="form-textarea" id="pl-notes" placeholder="${esc(i18n.t('place_notes_hint'))}"></textarea></div>
             <button type="submit" class="btn btn-primary btn-block btn-lg" data-i18n="place_submit">${esc(i18n.t('place_submit'))}</button>
           </form>
         </div>
       </section>`;
 
-    // Highlight selected type
     const typeRadios = document.querySelectorAll('input[name="listing-type"]');
     function updateTypeStyles() {
       document.getElementById('type-buy-label').style.borderColor = typeRadios[0].checked ? 'var(--accent)' : 'var(--border)';
@@ -722,10 +667,9 @@
     typeRadios.forEach(r => r.addEventListener('change', updateTypeStyles));
     updateTypeStyles();
 
-    document.getElementById('place-listing-form').addEventListener('submit', (e) => {
+    document.getElementById('place-listing-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const data = {
-        userId: user.id,
         type: document.querySelector('input[name="listing-type"]:checked').value,
         oilType: document.getElementById('pl-oil-type').value,
         quantity: document.getElementById('pl-quantity').value,
@@ -736,10 +680,12 @@
         deliveryDate: document.getElementById('pl-date').value,
         notes: document.getElementById('pl-notes').value.trim()
       };
-      const result = store.createListing(data);
-      if (result.success) {
+      const result = await store.createListing(data);
+      if (result && result.success) {
         showToast(i18n.t('place_success'), 'success');
         navigate('listings');
+      } else {
+        showToast((result && result.error) || 'Failed to create listing', 'error');
       }
     });
   }
@@ -747,10 +693,10 @@
   // ============================================================
   // PAGE: My Matches
   // ============================================================
-  function renderMatches(main) {
+  async function renderMatches(main) {
     const user = store.getCurrentUser();
     if (!user) { navigate('login'); return; }
-    const matches = store.getMatchesForUser(user.id);
+    const matches = await store.getMatches();
 
     main.innerHTML = `
       <section class="page-section">
@@ -771,21 +717,20 @@
         </div>
       </section>`;
 
-    // Event delegation for match actions
-    main.addEventListener('click', (e) => {
+    main.addEventListener('click', async (e) => {
       const acceptBtn = e.target.closest('.match-accept-btn');
       const declineBtn = e.target.closest('.match-decline-btn');
       const stripeBtn = e.target.closest('.match-stripe-btn');
 
       if (acceptBtn) {
-        store.updateMatch(acceptBtn.dataset.id, { status: 'accepted' });
+        await store.updateMatch(acceptBtn.dataset.id, { status: 'accepted' });
         showToast('Match accepted!', 'success');
-        renderMatches(main);
+        await renderMatches(main);
       }
       if (declineBtn) {
-        store.updateMatch(declineBtn.dataset.id, { status: 'declined' });
+        await store.updateMatch(declineBtn.dataset.id, { status: 'declined' });
         showToast('Match declined.', 'info');
-        renderMatches(main);
+        await renderMatches(main);
       }
       if (stripeBtn) {
         showModal('Stripe Payment', `
@@ -805,12 +750,9 @@
   }
 
   function renderMatchCard(match, user) {
-    const listing = store.getListing(match.listingId);
+    const listing = match.listing;
+    const counterparty = match.counterparty;
     const isAccepted = match.status === 'accepted' || match.status === 'completed';
-    const isBuyer = match.buyerId === user.id;
-    const counterpartyId = isBuyer ? match.sellerId : match.buyerId;
-    const counterparty = store.getUser(counterpartyId);
-
     const statusClass = { pending: 'warning', accepted: 'success', completed: 'info', declined: 'error' }[match.status] || 'info';
 
     return `
@@ -860,11 +802,11 @@
   // ============================================================
   // PAGE: Profile
   // ============================================================
-  function renderProfile(main) {
+  async function renderProfile(main) {
     const user = store.getCurrentUser();
     if (!user) { navigate('login'); return; }
-    const userListings = store.getUserListings(user.id);
-    const userMatches = store.getMatchesForUser(user.id);
+    const userListings = await store.getListings({ userId: user.id, all: true });
+    const userMatches = await store.getMatches();
 
     const kycBadge = {
       verified: `<span class="badge badge-success" data-i18n="profile_kyc_verified">${esc(i18n.t('profile_kyc_verified'))}</span>`,
@@ -883,7 +825,6 @@
               <div class="mt-8">${kycBadge}</div>
             </div>
           </div>
-
           <div class="profile-grid">
             <div class="card">
               <h3 class="mb-16" data-i18n="profile_company_info">${esc(i18n.t('profile_company_info'))}</h3>
@@ -904,7 +845,6 @@
               </div>
             </div>
           </div>
-
           <div class="card mt-24">
             <h3 class="mb-16">Account Overview</h3>
             <div class="admin-stats">
@@ -914,7 +854,6 @@
               <div class="admin-stat-card"><div class="admin-stat-value">${user.ndaAccepted ? 'Yes' : 'No'}</div><div class="admin-stat-label">NDA Accepted</div></div>
             </div>
           </div>
-
           ${user.documents && user.documents.length ? `
           <div class="card mt-24">
             <h3 class="mb-16">KYC Documents</h3>
@@ -929,24 +868,20 @@
   // ============================================================
   // PAGE: Admin Panel
   // ============================================================
-  function renderAdmin(main) {
+  async function renderAdmin(main) {
     if (!store.isAdmin()) { navigate('home'); return; }
-    const stats = store.getStats();
+    const stats = await store.getStats();
 
     main.innerHTML = `
       <section class="page-section">
         <div class="container">
-          <div class="section-header">
-            <h2 data-i18n="admin_title">${esc(i18n.t('admin_title'))}</h2>
-          </div>
-
+          <div class="section-header"><h2 data-i18n="admin_title">${esc(i18n.t('admin_title'))}</h2></div>
           <div class="admin-stats">
             <div class="admin-stat-card"><div class="admin-stat-value">${stats.totalUsers}</div><div class="admin-stat-label" data-i18n="admin_total_users">${esc(i18n.t('admin_total_users'))}</div></div>
             <div class="admin-stat-card"><div class="admin-stat-value">${stats.totalListings}</div><div class="admin-stat-label" data-i18n="admin_total_listings">${esc(i18n.t('admin_total_listings'))}</div></div>
             <div class="admin-stat-card"><div class="admin-stat-value">${stats.totalMatches}</div><div class="admin-stat-label" data-i18n="admin_total_matches">${esc(i18n.t('admin_total_matches'))}</div></div>
             <div class="admin-stat-card"><div class="admin-stat-value">${formatCurrency(stats.estimatedRevenue, 'EUR')}</div><div class="admin-stat-label" data-i18n="admin_total_revenue">${esc(i18n.t('admin_total_revenue'))}</div></div>
           </div>
-
           <div class="tabs" id="admin-tabs">
             <button class="tab active" data-tab="pending" data-i18n="admin_pending_users">${esc(i18n.t('admin_pending_users'))}</button>
             <button class="tab" data-tab="users" data-i18n="admin_all_users">${esc(i18n.t('admin_all_users'))}</button>
@@ -958,60 +893,47 @@
 
     let activeTab = 'pending';
 
-    function renderTab() {
+    async function renderTab() {
       const content = document.getElementById('admin-tab-content');
+      if (!content) return;
       document.querySelectorAll('#admin-tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.tab === activeTab));
 
       if (activeTab === 'pending') {
-        const pending = store.getPendingUsers();
+        const pending = await store.getPendingUsers();
         if (!pending.length) {
           content.innerHTML = `<div class="empty-state"><h3 data-i18n="admin_no_pending">${esc(i18n.t('admin_no_pending'))}</h3></div>`;
         } else {
           content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>${esc(i18n.t('admin_user_company'))}</th><th>${esc(i18n.t('admin_user_email'))}</th><th>Country</th><th>${esc(i18n.t('admin_user_date'))}</th><th>${esc(i18n.t('admin_user_actions'))}</th></tr></thead><tbody>
             ${pending.map(u => `<tr>
               <td><strong>${esc(u.companyName)}</strong><br><span class="text-muted" style="font-size:0.8rem">${esc(u.contactName)}</span></td>
-              <td>${esc(u.email)}</td>
-              <td>${esc(u.companyCountry)}</td>
-              <td>${formatDate(u.createdAt)}</td>
-              <td>
-                <div style="display:flex;gap:8px">
-                  <button class="btn btn-success btn-sm admin-approve-btn" data-id="${esc(u.id)}" data-i18n="admin_approve">${esc(i18n.t('admin_approve'))}</button>
-                  <button class="btn btn-danger btn-sm admin-reject-btn" data-id="${esc(u.id)}" data-i18n="admin_reject">${esc(i18n.t('admin_reject'))}</button>
-                  <button class="btn btn-ghost btn-sm admin-docs-btn" data-id="${esc(u.id)}" data-i18n="admin_view_docs">${esc(i18n.t('admin_view_docs'))}</button>
-                </div>
-              </td>
-            </tr>`).join('')}
+              <td>${esc(u.email)}</td><td>${esc(u.companyCountry)}</td><td>${formatDate(u.createdAt)}</td>
+              <td><div style="display:flex;gap:8px">
+                <button class="btn btn-success btn-sm admin-approve-btn" data-id="${esc(u.id)}">${esc(i18n.t('admin_approve'))}</button>
+                <button class="btn btn-danger btn-sm admin-reject-btn" data-id="${esc(u.id)}">${esc(i18n.t('admin_reject'))}</button>
+                <button class="btn btn-ghost btn-sm admin-docs-btn" data-id="${esc(u.id)}">${esc(i18n.t('admin_view_docs'))}</button>
+              </div></td></tr>`).join('')}
           </tbody></table></div>`;
         }
       } else if (activeTab === 'users') {
-        const users = store.getUsers().filter(u => u.role !== 'admin');
+        const users = await store.getUsers();
         content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>${esc(i18n.t('admin_user_company'))}</th><th>${esc(i18n.t('admin_user_email'))}</th><th>Country</th><th>${esc(i18n.t('admin_user_status'))}</th><th>${esc(i18n.t('admin_user_date'))}</th></tr></thead><tbody>
           ${users.map(u => {
             const statusBadge = { verified: 'success', pending: 'warning', rejected: 'error' }[u.kycStatus] || 'info';
-            return `<tr>
-              <td><strong>${esc(u.companyName)}</strong><br><span class="text-muted" style="font-size:0.8rem">${esc(u.contactName)}</span></td>
-              <td>${esc(u.email)}</td>
-              <td>${esc(u.companyCountry)}</td>
+            return `<tr><td><strong>${esc(u.companyName)}</strong><br><span class="text-muted" style="font-size:0.8rem">${esc(u.contactName)}</span></td>
+              <td>${esc(u.email)}</td><td>${esc(u.companyCountry)}</td>
               <td><span class="badge badge-${statusBadge}">${esc(u.kycStatus)}</span></td>
-              <td>${formatDate(u.createdAt)}</td>
-            </tr>`;
+              <td>${formatDate(u.createdAt)}</td></tr>`;
           }).join('')}
         </tbody></table></div>`;
       } else if (activeTab === 'listings') {
-        const listings = store.getListings();
+        const listings = await store.getListings({ all: true });
         content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>Type</th><th>Oil</th><th>Quantity</th><th>Price</th><th>Location</th><th>Seller</th><th>Date</th></tr></thead><tbody>
-          ${listings.map(l => {
-            const u = store.getUser(l.userId);
-            return `<tr>
-              <td><span class="tag tag-${l.type}">${esc(i18n.t('general_' + l.type))}</span></td>
-              <td>${esc(i18n.t(l.oilType))}</td>
-              <td>${l.quantity.toLocaleString()}</td>
-              <td>${formatCurrency(l.price, l.currency)}</td>
-              <td>${esc(l.deliveryLocation)}</td>
-              <td>${u ? esc(u.companyName) : 'N/A'}</td>
-              <td>${formatDate(l.createdAt)}</td>
-            </tr>`;
-          }).join('')}
+          ${listings.map(l => `<tr>
+            <td><span class="tag tag-${l.type}">${esc(i18n.t('general_' + l.type))}</span></td>
+            <td>${esc(i18n.t(l.oilType))}</td><td>${l.quantity.toLocaleString()}</td>
+            <td>${formatCurrency(l.price, l.currency)}</td><td>${esc(l.deliveryLocation)}</td>
+            <td>${l.seller ? esc(l.seller.companyName) : 'N/A'}</td><td>${formatDate(l.createdAt)}</td>
+          </tr>`).join('')}
         </tbody></table></div>`;
       }
       i18n.translatePage();
@@ -1022,24 +944,24 @@
       if (tab) { activeTab = tab.dataset.tab; renderTab(); }
     });
 
-    main.addEventListener('click', (e) => {
+    main.addEventListener('click', async (e) => {
       const approveBtn = e.target.closest('.admin-approve-btn');
       const rejectBtn = e.target.closest('.admin-reject-btn');
       const docsBtn = e.target.closest('.admin-docs-btn');
 
       if (approveBtn) {
-        store.updateUser(approveBtn.dataset.id, { kycStatus: 'verified' });
+        await store.updateUser(approveBtn.dataset.id, { kycStatus: 'verified' });
         showToast('User approved!', 'success');
-        renderTab();
+        await renderTab();
       }
       if (rejectBtn) {
-        store.updateUser(rejectBtn.dataset.id, { kycStatus: 'rejected' });
+        await store.updateUser(rejectBtn.dataset.id, { kycStatus: 'rejected' });
         showToast('User rejected.', 'info');
-        renderTab();
+        await renderTab();
       }
       if (docsBtn) {
-        const u = store.getUser(docsBtn.dataset.id);
-        if (u) {
+        const u = await store.getUser(docsBtn.dataset.id);
+        if (u && !u.error) {
           showModal('KYC Documents — ' + u.companyName,
             `<div style="display:flex;flex-direction:column;gap:12px">
               ${(u.documents || []).map(d => `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(d)}</span></div>`).join('')}
@@ -1051,20 +973,20 @@
       }
     });
 
-    renderTab();
+    await renderTab();
   }
 
   // ============================================================
-  // PAGE: Terms / Privacy (simple)
+  // PAGE: Terms / Privacy
   // ============================================================
   function renderTerms(main) {
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
       <h2 class="mb-24">Terms of Service</h2>
       <div class="card" style="line-height:1.8;color:var(--text-secondary)">
-        <h3>1. Acceptance of Terms</h3><p>By accessing and using the OilBridge platform operated by Sentari Holding BV, you agree to these terms of service.</p>
+        <h3>1. Acceptance of Terms</h3><p>By accessing and using the OilBridge platform, you agree to these terms of service.</p>
         <h3 class="mt-24">2. Platform Usage</h3><p>OilBridge provides a marketplace for verified traders to list and match oil trading opportunities. All users must complete KYC verification before trading.</p>
         <h3 class="mt-24">3. Commission</h3><p>A commission of 3.2% is charged on all successfully completed transactions facilitated through the platform.</p>
-        <h3 class="mt-24">4. Liability</h3><p>Sentari Holding BV acts solely as an intermediary platform. We do not take ownership of traded commodities and are not liable for the quality, delivery, or performance of trades.</p>
+        <h3 class="mt-24">4. Liability</h3><p>OilBridge acts solely as an intermediary platform. We do not take ownership of traded commodities and are not liable for the quality, delivery, or performance of trades.</p>
         <h3 class="mt-24">5. Governing Law</h3><p>These terms are governed by the laws of the Netherlands and the European Union.</p>
       </div></div></section>`;
   }
@@ -1077,7 +999,7 @@
         <h3 class="mt-24">2. Data Usage</h3><p>Your data is used for identity verification, trade matching, communication between counterparties, and regulatory reporting.</p>
         <h3 class="mt-24">3. Data Protection</h3><p>We comply with GDPR and implement industry-standard security measures to protect your information.</p>
         <h3 class="mt-24">4. Data Sharing</h3><p>Contact details are shared with counterparties only after both parties accept a match. We do not sell data to third parties.</p>
-        <h3 class="mt-24">5. Your Rights</h3><p>You have the right to access, correct, or delete your personal data. Contact info@sentari.nl for data requests.</p>
+        <h3 class="mt-24">5. Your Rights</h3><p>You have the right to access, correct, or delete your personal data. Contact contact@oilbridge.eu for data requests.</p>
       </div></div></section>`;
   }
 
@@ -1091,7 +1013,6 @@
     { key: 'matches', selector: '[href="#matches"]', position: 'bottom' },
     { key: 'profile', selector: '.user-menu-btn', position: 'bottom' },
   ];
-
   let onboardingIdx = 0;
 
   function startOnboarding() {
@@ -1108,28 +1029,17 @@
 
   function renderOnboardingStep() {
     const step = onboardingSteps[onboardingIdx];
-    const overlay = document.getElementById('onboarding-overlay');
     const tooltip = document.getElementById('onboarding-tooltip');
-    const title = document.getElementById('onboarding-title');
-    const desc = document.getElementById('onboarding-desc');
-    const indicator = document.getElementById('onboarding-step-indicator');
-    const prevBtn = document.getElementById('onboarding-prev');
-    const nextBtn = document.getElementById('onboarding-next');
-
-    title.textContent = i18n.t('onboarding_' + step.key + '_title');
-    desc.textContent = i18n.t('onboarding_' + step.key + '_desc');
-
-    indicator.innerHTML = onboardingSteps.map((_, i) =>
+    document.getElementById('onboarding-title').textContent = i18n.t('onboarding_' + step.key + '_title');
+    document.getElementById('onboarding-desc').textContent = i18n.t('onboarding_' + step.key + '_desc');
+    document.getElementById('onboarding-step-indicator').innerHTML = onboardingSteps.map((_, i) =>
       `<div class="onboarding-step-dot ${i === onboardingIdx ? 'active' : ''}"></div>`
     ).join('');
-
-    prevBtn.classList.toggle('hidden', onboardingIdx === 0);
-    nextBtn.textContent = onboardingIdx === onboardingSteps.length - 1 ? i18n.t('onboarding_finish') : i18n.t('onboarding_next');
+    document.getElementById('onboarding-prev').classList.toggle('hidden', onboardingIdx === 0);
+    document.getElementById('onboarding-next').textContent = onboardingIdx === onboardingSteps.length - 1 ? i18n.t('onboarding_finish') : i18n.t('onboarding_next');
 
     if (step.position === 'center' || !step.selector) {
-      tooltip.style.top = '50%';
-      tooltip.style.left = '50%';
-      tooltip.style.transform = 'translate(-50%, -50%)';
+      tooltip.style.top = '50%'; tooltip.style.left = '50%'; tooltip.style.transform = 'translate(-50%, -50%)';
     } else {
       const target = document.querySelector(step.selector);
       if (target) {
@@ -1138,9 +1048,7 @@
         tooltip.style.top = (rect.bottom + 16) + 'px';
         tooltip.style.left = Math.max(16, Math.min(rect.left, window.innerWidth - 400)) + 'px';
       } else {
-        tooltip.style.top = '50%';
-        tooltip.style.left = '50%';
-        tooltip.style.transform = 'translate(-50%, -50%)';
+        tooltip.style.top = '50%'; tooltip.style.left = '50%'; tooltip.style.transform = 'translate(-50%, -50%)';
       }
     }
   }
@@ -1149,43 +1057,34 @@
   // Event Setup
   // ============================================================
   function setupEvents() {
-    // Route changes
-    window.addEventListener('hashchange', render);
+    window.addEventListener('hashchange', () => render());
 
-    // Theme toggle
     document.getElementById('theme-toggle').addEventListener('click', () => {
       const html = document.documentElement;
-      const current = html.getAttribute('data-theme');
-      const next = current === 'dark' ? 'light' : 'dark';
+      const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
       html.setAttribute('data-theme', next);
       localStorage.setItem('ob_theme', next);
       updateWatermark();
     });
 
-    // Language select
     document.getElementById('lang-select').addEventListener('change', (e) => {
       i18n.setLocale(e.target.value);
       render();
     });
 
-    // User menu
     document.getElementById('user-menu-btn').addEventListener('click', (e) => {
       e.stopPropagation();
       document.getElementById('user-dropdown').classList.toggle('open');
     });
-    document.addEventListener('click', () => {
-      document.getElementById('user-dropdown').classList.remove('open');
-    });
+    document.addEventListener('click', () => document.getElementById('user-dropdown').classList.remove('open'));
 
-    // Logout
-    document.getElementById('logout-btn').addEventListener('click', () => {
-      store.logout();
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+      await store.logout();
       document.getElementById('user-dropdown').classList.remove('open');
       showToast('Logged out successfully.', 'info');
       navigate('home');
     });
 
-    // Mobile menu
     document.getElementById('mobile-menu-btn').addEventListener('click', () => {
       document.getElementById('mobile-menu-btn').classList.toggle('open');
       document.getElementById('nav-links').classList.toggle('open');
@@ -1202,45 +1101,39 @@
       document.getElementById('mobile-overlay').classList.remove('open');
     });
 
-    // Modal close
     document.getElementById('modal-close').addEventListener('click', closeModal);
     document.getElementById('modal-overlay').addEventListener('click', (e) => {
       if (e.target === document.getElementById('modal-overlay')) closeModal();
     });
 
-    // Onboarding
     document.getElementById('onboarding-skip').addEventListener('click', endOnboarding);
-    document.getElementById('onboarding-prev').addEventListener('click', () => {
-      if (onboardingIdx > 0) { onboardingIdx--; renderOnboardingStep(); }
-    });
+    document.getElementById('onboarding-prev').addEventListener('click', () => { if (onboardingIdx > 0) { onboardingIdx--; renderOnboardingStep(); } });
     document.getElementById('onboarding-next').addEventListener('click', () => {
       if (onboardingIdx < onboardingSteps.length - 1) { onboardingIdx++; renderOnboardingStep(); }
       else endOnboarding();
     });
     document.getElementById('onboarding-backdrop').addEventListener('click', endOnboarding);
 
-    // Resize watermark
     window.addEventListener('resize', debounce(updateWatermark, 250));
   }
 
   // ============================================================
   // Init
   // ============================================================
-  function init() {
-    // Restore theme
+  async function init() {
     const savedTheme = localStorage.getItem('ob_theme');
     if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
-
-    // Restore language
     document.getElementById('lang-select').value = i18n.getLocale();
 
+    store = new Store();
+    await store.init();
+
     setupEvents();
-    render();
+    await render();
   }
 
-  // DOM Ready
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', () => init());
   } else {
     init();
   }

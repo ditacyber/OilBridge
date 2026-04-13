@@ -1,5 +1,6 @@
 const express = require('express');
 const initSqlJs = require('sql.js');
+const Stripe = require('stripe');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -11,6 +12,13 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'oilbridge.db');
 const COMMISSION_RATE = 0.032;
 const PORT = process.env.PORT || 3000;
+
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null;
+
+if (stripe) console.log('Stripe payment integration enabled.');
+else console.log('Stripe not configured — set STRIPE_SECRET_KEY to enable payments.');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -98,6 +106,7 @@ function toMatch(row) {
     id: row.id, listingId: row.listing_id, buyerId: row.buyer_id, sellerId: row.seller_id,
     status: row.status, quantity: row.quantity, pricePerUnit: row.price_per_unit,
     totalValue: row.total_value, commission: row.commission, currency: row.currency,
+    commissionPaid: !!row.commission_paid, stripeSessionId: row.stripe_session_id || null,
     createdAt: row.created_at
   };
 }
@@ -164,6 +173,10 @@ function initDatabase() {
     created_at TEXT NOT NULL
   )`);
 
+  // Migrate: add Stripe payment columns to matches
+  try { db.run('ALTER TABLE matches ADD COLUMN commission_paid INTEGER NOT NULL DEFAULT 0'); } catch(e) {}
+  try { db.run('ALTER TABLE matches ADD COLUMN stripe_session_id TEXT'); } catch(e) {}
+
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
   saveDb();
@@ -173,7 +186,7 @@ function seedDatabase() {
   // Only seed the admin account so the platform can be managed
   db.run(
     'INSERT INTO users (id,email,password,role,company_name,company_reg,company_country,company_vat,contact_name,contact_phone,contact_position,kyc_status,nda_accepted,documents,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    ['admin-001','admin@oilbridge.eu',hashPassword('Admin2024!'),'admin','OilBridge','KVK-00000000','Netherlands','','Platform Administrator','','System Administrator','verified',1,'[]',new Date().toISOString()]
+    ['admin-001','admin@oilbridge.eu',hashPassword('NCH9fqfY5vtTz9HIi0svNA'),'admin','OilBridge','KVK-00000000','Netherlands','','Platform Administrator','','System Administrator','verified',1,'[]',new Date().toISOString()]
   );
   console.log('Database initialized with admin account.');
 }
@@ -183,6 +196,29 @@ function seedDatabase() {
 // ============================================================
 function createApp() {
   const app = express();
+
+  // --- Stripe webhook (needs raw body — must be before express.json) ---
+  app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+    if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) return res.status(503).json({ error: 'Stripe not configured' });
+    const sig = req.headers['stripe-signature'];
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    } catch (err) {
+      console.error('Webhook signature verification failed:', err.message);
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const matchId = session.metadata && session.metadata.matchId;
+      if (matchId) {
+        run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
+        console.log(`Commission paid for match ${matchId}`);
+      }
+    }
+    res.json({ received: true });
+  });
+
   app.use(express.json());
 
   // --- Auth middleware ---
@@ -375,6 +411,65 @@ function createApp() {
       run('UPDATE matches SET status = ? WHERE id = ?', [status, req.params.id]);
     }
     res.json({ success: true });
+  });
+
+  // ========== Stripe Payment Routes ==========
+  app.post('/api/payments/create-session', auth, async (req, res) => {
+    if (!stripe) return res.status(503).json({ error: 'Stripe is not configured. Set the STRIPE_SECRET_KEY environment variable.' });
+    const { matchId } = req.body;
+    if (!matchId) return res.status(400).json({ error: 'matchId is required' });
+
+    const match = queryOne('SELECT * FROM matches WHERE id = ?', [matchId]);
+    if (!match) return res.status(404).json({ error: 'Match not found' });
+    if (match.buyer_id !== req.user.id && match.seller_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    if (match.status !== 'accepted') return res.status(400).json({ error: 'Match must be accepted before payment' });
+    if (match.commission_paid) return res.status(400).json({ error: 'Commission already paid' });
+
+    try {
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      const session = await stripe.checkout.sessions.create({
+        mode: 'payment',
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency: match.currency.toLowerCase(),
+            product_data: {
+              name: 'OilBridge Trade Commission (3.2%)',
+              description: `Commission for match ${match.id} — ${match.quantity.toLocaleString()} units at ${match.price_per_unit} ${match.currency}/unit`,
+            },
+            unit_amount: Math.round(match.commission * 100),
+          },
+          quantity: 1,
+        }],
+        metadata: { matchId: match.id, userId: req.user.id },
+        success_url: `${baseUrl}/#payment-success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${baseUrl}/#matches`,
+      });
+
+      run('UPDATE matches SET stripe_session_id = ? WHERE id = ?', [session.id, match.id]);
+      res.json({ url: session.url, sessionId: session.id });
+    } catch (err) {
+      console.error('Stripe session creation failed:', err.message);
+      res.status(500).json({ error: 'Failed to create payment session' });
+    }
+  });
+
+  app.get('/api/payments/verify-session', auth, async (req, res) => {
+    if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
+    const { session_id } = req.query;
+    if (!session_id) return res.status(400).json({ error: 'session_id required' });
+    try {
+      const session = await stripe.checkout.sessions.retrieve(session_id);
+      const matchId = session.metadata && session.metadata.matchId;
+      const match = matchId ? queryOne('SELECT * FROM matches WHERE id = ?', [matchId]) : null;
+      res.json({
+        status: session.payment_status,
+        matchId,
+        commissionPaid: match ? !!match.commission_paid : false
+      });
+    } catch (err) {
+      res.status(400).json({ error: 'Invalid session' });
+    }
   });
 
   // ========== Stats ==========

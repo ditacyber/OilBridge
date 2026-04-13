@@ -111,6 +111,10 @@ class Store {
   async createMatch(data) { return await this.api('POST', '/matches', data); }
   async updateMatch(id, data) { return await this.api('PATCH', '/matches/' + id, data); }
 
+  // --- Payments ---
+  async createPaymentSession(matchId) { return await this.api('POST', '/payments/create-session', { matchId }); }
+  async verifyPaymentSession(sessionId) { return await this.api('GET', '/payments/verify-session?session_id=' + sessionId); }
+
   // --- Stats ---
   async getStats() { return (await this.api('GET', '/stats')) || {}; }
 

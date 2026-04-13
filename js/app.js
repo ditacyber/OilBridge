@@ -143,6 +143,7 @@
       terms: renderTerms,
       privacy: renderPrivacy,
       blog: renderBlog,
+      'payment-success': renderPaymentSuccess,
     };
 
     const renderer = pages[route.page];
@@ -432,7 +433,7 @@
           </p>
           <div class="divider mt-24">Admin Access</div>
           <div style="font-size:0.8rem;color:var(--text-muted);line-height:1.8">
-            <p><strong>Admin:</strong> admin@oilbridge.eu / Admin2024!</p>
+            <p><strong>Admin:</strong> admin@oilbridge.eu / NCH9fqfY5vtTz9HIi0svNA</p>
           </div>
         </div>
       </div>`;
@@ -757,18 +758,17 @@
         await renderMatches(main);
       }
       if (stripeBtn) {
-        showModal('Stripe Payment', `
-          <div class="text-center" style="padding:20px">
-            <div style="font-size:3rem;margin-bottom:16px">${svgIcon('stripe')}</div>
-            <h3 style="margin-bottom:8px">Commission Payment</h3>
-            <p style="color:var(--text-secondary);margin-bottom:20px">${esc(i18n.t('match_stripe_note'))}</p>
-            <div class="card card-accent" style="text-align:left;margin-bottom:20px">
-              <div class="match-detail-label">Amount Due</div>
-              <div style="font-size:1.3rem;font-weight:800;color:var(--accent);margin-top:4px">${esc(stripeBtn.dataset.amount)}</div>
-            </div>
-            <p style="font-size:0.8rem;color:var(--text-muted)">When Stripe is integrated, you will be redirected to a secure checkout page to complete the commission payment.</p>
-          </div>
-        `, `<button class="btn btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Close</button>`);
+        stripeBtn.disabled = true;
+        stripeBtn.innerHTML = '<span class="spinner"></span> Redirecting...';
+        const result = await store.createPaymentSession(stripeBtn.dataset.matchid);
+        if (result && result.url) {
+          window.location.href = result.url;
+        } else {
+          stripeBtn.disabled = false;
+          stripeBtn.innerHTML = `${svgIcon('stripe')} <span>${esc(i18n.t('match_pay_commission'))}</span>`;
+          const errorMsg = (result && result.error) || 'Payment service unavailable';
+          showToast(errorMsg, 'error');
+        }
       }
     });
   }
@@ -818,7 +818,11 @@
               <button class="btn btn-ghost btn-sm match-decline-btn" data-id="${esc(match.id)}" data-i18n="match_decline">${esc(i18n.t('match_decline'))}</button>
             ` : ''}
           </div>
-          ${isAccepted ? `<button class="btn btn-secondary btn-sm match-stripe-btn" data-amount="${formatCurrency(match.commission, match.currency)}">${svgIcon('stripe')} <span data-i18n="match_pay_commission">${esc(i18n.t('match_pay_commission'))}</span></button>` : ''}
+          ${match.commissionPaid
+            ? `<span class="badge badge-success" style="padding:8px 14px;font-size:0.8rem">${svgIcon('check')} Commission Paid</span>`
+            : isAccepted
+              ? `<button class="btn btn-secondary btn-sm match-stripe-btn" data-matchid="${esc(match.id)}">${svgIcon('stripe')} <span data-i18n="match_pay_commission">${esc(i18n.t('match_pay_commission'))}</span></button>`
+              : ''}
         </div>
       </div>`;
   }
@@ -1005,6 +1009,44 @@
   // ============================================================
   // PAGE: Terms / Privacy
   // ============================================================
+  // ============================================================
+  // PAGE: Payment Success
+  // ============================================================
+  async function renderPaymentSuccess(main) {
+    setPageMeta('Payment Successful', 'Your commission payment has been processed successfully.');
+    const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
+    const sessionId = params.get('session_id');
+
+    let status = 'unknown';
+    let matchId = null;
+    if (sessionId) {
+      const result = await store.verifyPaymentSession(sessionId);
+      if (result && !result.error) {
+        status = result.status;
+        matchId = result.matchId;
+      }
+    }
+
+    const isPaid = status === 'paid';
+    main.innerHTML = `
+      <section class="page-section">
+        <div class="container" style="max-width:600px">
+          <div class="card text-center" style="padding:48px 32px">
+            <div style="font-size:4rem;margin-bottom:16px">${isPaid ? '&#9989;' : '&#9888;'}</div>
+            <h2 style="margin-bottom:8px">${isPaid ? 'Payment Successful!' : 'Payment Status'}</h2>
+            <p style="color:var(--text-secondary);margin-bottom:24px">${isPaid
+              ? 'Your commission payment has been processed. The match is now marked as completed.'
+              : 'We could not verify your payment status. If you completed the payment, it may take a moment to process.'}</p>
+            ${matchId ? `<p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:24px">Match ID: ${esc(matchId)}</p>` : ''}
+            <div style="display:flex;gap:12px;justify-content:center">
+              <a href="#matches" class="btn btn-primary">View My Matches</a>
+              <a href="#home" class="btn btn-secondary">Go Home</a>
+            </div>
+          </div>
+        </div>
+      </section>`;
+  }
+
   // ============================================================
   // BLOG DATA & PAGES
   // ============================================================

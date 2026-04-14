@@ -216,6 +216,23 @@
     const activeListings = publicStats.activeListings || listings.length || 0;
     const totalVolumeEur = publicStats.totalVolumeEur || 0;
 
+    // Primary CTA routes based on login state:
+    //   not logged in      → register
+    //   logged in, verified → place a listing
+    //   logged in, pending  → profile (to complete KYC)
+    const homeUser = store.getCurrentUser();
+    let ctaHref, ctaLabel;
+    if (!homeUser) {
+      ctaHref = '#register';
+      ctaLabel = i18n.t('hero_cta_register');
+    } else if (store.isVerified()) {
+      ctaHref = '#place-listing';
+      ctaLabel = i18n.t('nav_place_listing');
+    } else {
+      ctaHref = '#profile';
+      ctaLabel = 'Complete Verification';
+    }
+
     main.innerHTML = `
       <section class="hero">
         <div class="hero-content">
@@ -223,7 +240,7 @@
           <p data-i18n="hero_subtitle">${esc(i18n.t('hero_subtitle'))}</p>
           <div class="hero-actions">
             <a href="#listings" class="btn btn-primary btn-lg" data-i18n="hero_cta_browse">${esc(i18n.t('hero_cta_browse'))}</a>
-            <a href="#register" class="btn btn-secondary btn-lg" data-i18n="hero_cta_register">${esc(i18n.t('hero_cta_register'))}</a>
+            <a href="${ctaHref}" class="btn btn-secondary btn-lg">${esc(ctaLabel)}</a>
           </div>
           <div class="hero-stats">
             <div class="hero-stat">
@@ -725,7 +742,12 @@
   function renderPlaceListing(main) {
     setPageMeta('Place a Listing', 'Create a buy or sell order for crude oil, diesel, gasoline, jet fuel, LNG, or other petroleum products on the OilBridge marketplace.');
     const user = store.getCurrentUser();
-    if (!user || !store.isVerified()) { navigate('login'); return; }
+    if (!user) { navigate('login'); return; }
+    if (!store.isVerified()) {
+      showToast('Please complete identity verification before placing a listing.', 'info');
+      navigate('profile');
+      return;
+    }
 
     main.innerHTML = `
       <section class="page-section">

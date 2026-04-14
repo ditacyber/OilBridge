@@ -31,7 +31,13 @@ class Store {
       }
       if (res.status === 204) return { success: true };
       const data = await res.json().catch(() => null);
-      if (!res.ok) return { error: (data && data.error) || 'Request failed' };
+      if (!res.ok) {
+        // Preserve the full error response from the server so callers can
+        // see additional fields like `code`, `fallback`, `stripeType`, etc.
+        return data && typeof data === 'object'
+          ? Object.assign({ error: data.error || 'Request failed' }, data)
+          : { error: 'Request failed' };
+      }
       return data;
     } catch (err) {
       console.error('API error:', err);

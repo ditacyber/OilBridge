@@ -116,6 +116,13 @@ class Store {
   async createPaymentSession(matchId) { return await this.api('POST', '/payments/create-session', { matchId }); }
   async verifyPaymentSession(sessionId) { return await this.api('GET', '/payments/verify-session?session_id=' + sessionId); }
 
+  // --- Chat ---
+  async getChatMessages(matchId) { return await this.api('GET', '/matches/' + matchId + '/messages'); }
+  async sendChatMessage(matchId, body) { return await this.api('POST', '/matches/' + matchId + '/messages', { body }); }
+  chatStreamUrl(matchId) { return '/api/matches/' + matchId + '/stream?token=' + encodeURIComponent(this.token || ''); }
+  async getAdminChats() { return (await this.api('GET', '/admin/chats')) || []; }
+  async getAdminChatMessages(matchId) { return await this.api('GET', '/admin/chats/' + matchId); }
+
   // --- Stats ---
   async getStats() { return (await this.api('GET', '/stats')) || {}; }
 

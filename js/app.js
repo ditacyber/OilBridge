@@ -13,7 +13,15 @@
   const EU_COUNTRIES = ['Austria','Belgium','Bulgaria','Croatia','Cyprus','Czech Republic','Denmark','Estonia','Finland','France','Germany','Greece','Hungary','Ireland','Italy','Latvia','Lithuania','Luxembourg','Malta','Netherlands','Poland','Portugal','Romania','Slovakia','Slovenia','Spain','Sweden'];
 
   let store;
+  let activeEventSource = null;
   const i18n = new I18n();
+
+  function closeActiveStream() {
+    if (activeEventSource) {
+      try { activeEventSource.close(); } catch {}
+      activeEventSource = null;
+    }
+  }
 
   // === SEO: Dynamic per-page meta ===
   function setPageMeta(title, description) {
@@ -125,6 +133,7 @@
 
   // === Rendering ===
   async function render() {
+    closeActiveStream();
     const route = getRoute();
     const main = document.getElementById('main-content');
     updateNav();
@@ -144,6 +153,7 @@
       privacy: renderPrivacy,
       blog: renderBlog,
       'payment-success': renderPaymentSuccess,
+      chat: renderChat,
     };
 
     const renderer = pages[route.page];
@@ -858,11 +868,14 @@
           </div>`}
         </div>
         <div class="match-card-footer">
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
             ${match.status === 'pending' ? `
               <button class="btn btn-primary btn-sm match-accept-btn" data-id="${esc(match.id)}" data-i18n="match_accept">${esc(i18n.t('match_accept'))}</button>
               <button class="btn btn-ghost btn-sm match-decline-btn" data-id="${esc(match.id)}" data-i18n="match_decline">${esc(i18n.t('match_decline'))}</button>
             ` : ''}
+            ${isAccepted && !match.commissionPaid
+              ? `<a href="#chat/${esc(match.id)}" class="btn btn-primary btn-sm">&#128172; Open Chat</a>`
+              : ''}
           </div>
           ${match.commissionPaid
             ? `<span class="badge badge-success" style="padding:8px 14px;font-size:0.8rem">${svgIcon('check')} Commission Paid</span>`
@@ -962,6 +975,7 @@
             <button class="tab active" data-tab="pending" data-i18n="admin_pending_users">${esc(i18n.t('admin_pending_users'))}</button>
             <button class="tab" data-tab="users" data-i18n="admin_all_users">${esc(i18n.t('admin_all_users'))}</button>
             <button class="tab" data-tab="listings" data-i18n="admin_all_listings">${esc(i18n.t('admin_all_listings'))}</button>
+            <button class="tab" data-tab="chats">Chats</button>
           </div>
           <div id="admin-tab-content"></div>
         </div>
@@ -1014,6 +1028,24 @@
             <td>${l.seller ? esc(l.seller.companyName) : 'N/A'}</td><td>${formatDate(l.createdAt)}</td>
           </tr>`).join('')}
         </tbody></table></div>`;
+      } else if (activeTab === 'chats') {
+        const chats = await store.getAdminChats();
+        if (!chats.length) {
+          content.innerHTML = `<div class="empty-state"><div class="empty-state-icon">&#128172;</div><h3>No chats yet</h3><p>Conversations between matched traders will appear here.</p></div>`;
+        } else {
+          content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>Match</th><th>Buyer</th><th>Seller</th><th>Messages</th><th>Blocked</th><th>Status</th><th>Last activity</th><th></th></tr></thead><tbody>
+            ${chats.map(c => `<tr>
+              <td><code style="font-size:0.75rem">${esc(c.matchId)}</code></td>
+              <td>${esc(c.buyer || 'N/A')}</td>
+              <td>${esc(c.seller || 'N/A')}</td>
+              <td>${c.messageCount}</td>
+              <td>${c.blockedCount > 0 ? `<span class="badge badge-error">${c.blockedCount}</span>` : '0'}</td>
+              <td><span class="badge badge-${c.commissionPaid ? 'success' : 'warning'}">${c.commissionPaid ? 'paid' : esc(c.status)}</span></td>
+              <td>${formatDate(c.lastMessageAt)}</td>
+              <td><button class="btn btn-ghost btn-sm admin-chat-view-btn" data-id="${esc(c.matchId)}">View</button></td>
+            </tr>`).join('')}
+          </tbody></table></div>`;
+        }
       }
       i18n.translatePage();
     }
@@ -1027,6 +1059,35 @@
       const approveBtn = e.target.closest('.admin-approve-btn');
       const rejectBtn = e.target.closest('.admin-reject-btn');
       const docsBtn = e.target.closest('.admin-docs-btn');
+      const chatViewBtn = e.target.closest('.admin-chat-view-btn');
+
+      if (chatViewBtn) {
+        const data = await store.getAdminChatMessages(chatViewBtn.dataset.id);
+        if (data && !data.error) {
+          const msgsHtml = (data.messages || []).map(m => {
+            const isBuyer = m.senderId === data.match.buyerId;
+            const senderName = isBuyer ? (data.buyer && data.buyer.company_name) : (data.seller && data.seller.company_name);
+            const time = new Date(m.createdAt).toLocaleString(i18n.getLocale());
+            return `<div style="padding:10px 12px;background:${m.blocked ? 'var(--error-bg)' : 'var(--bg-tertiary)'};border-radius:var(--radius-sm);margin-bottom:6px;border-left:3px solid ${m.blocked ? 'var(--error)' : (isBuyer ? 'var(--info)' : 'var(--success)')}">
+              <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:var(--text-muted);margin-bottom:4px">
+                <strong>${esc(senderName || 'Unknown')}</strong> ${m.blocked ? `<span class="badge badge-error">BLOCKED: ${esc(m.blockedReason || '')}</span>` : ''}
+                <span>${time}</span>
+              </div>
+              <div style="font-size:0.9rem">${esc(m.body)}</div>
+            </div>`;
+          }).join('');
+          showModal('Chat — ' + chatViewBtn.dataset.id,
+            `<div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:12px">
+              <strong>${esc((data.buyer && data.buyer.company_name) || '?')}</strong> (buyer) &harr; <strong>${esc((data.seller && data.seller.company_name) || '?')}</strong> (seller)
+              <br>Status: ${esc(data.match.status)} ${data.match.commissionPaid ? '&middot; commission paid' : ''}
+            </div>
+            <div style="max-height:400px;overflow-y:auto">${msgsHtml || '<p class="text-muted">No messages.</p>'}</div>`,
+            `<button class="btn btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Close</button>`
+          );
+        } else {
+          showToast((data && data.error) || 'Failed to load chat', 'error');
+        }
+      }
 
       if (approveBtn) {
         await store.updateUser(approveBtn.dataset.id, { kycStatus: 'verified' });
@@ -1141,6 +1202,165 @@
   // ============================================================
   // PAGE: Terms / Privacy
   // ============================================================
+  // ============================================================
+  // PAGE: Chat
+  // ============================================================
+  async function renderChat(main, matchId) {
+    const user = store.getCurrentUser();
+    if (!user) { navigate('login'); return; }
+    if (!matchId) { navigate('matches'); return; }
+
+    setPageMeta('Chat', 'Private chat between matched buyer and seller. Communication stays on OilBridge until commission is paid.');
+
+    const data = await store.getChatMessages(matchId);
+    if (!data || data.error) {
+      main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><h3>${esc((data && data.error) || 'Chat not available')}</h3><a href="#matches" class="btn btn-primary">Back to Matches</a></div></div></div>`;
+      return;
+    }
+
+    const { match, messages } = data;
+    const isClosed = match.commissionPaid || match.status !== 'accepted';
+
+    main.innerHTML = `
+      <div class="chat-page">
+        <a href="#matches" class="btn btn-ghost btn-sm mb-16">&larr; Back to Matches</a>
+
+        ${isClosed ? `
+          <div class="chat-closed-banner">
+            <h3>${match.commissionPaid ? '&#10003; Deal Confirmed' : '&#9888; Chat Unavailable'}</h3>
+            <p>${match.commissionPaid
+              ? 'Commission has been paid. Please arrange delivery directly with your counterparty using the contact details shown on the match page.'
+              : 'Chat is only available for accepted matches that have not yet been paid.'}</p>
+          </div>
+        ` : `
+          <div class="chat-warning-banner">
+            &#9888; All messages stay on OilBridge until commission is paid. Sharing email, phone, WhatsApp, or other direct contact info is automatically blocked and logged.
+          </div>
+        `}
+
+        <div class="chat-header">
+          <div class="chat-header-info">
+            <h3>Match ${esc(matchId)}</h3>
+            <div class="text-muted"><span class="chat-status-dot" id="chat-status-dot"></span><span id="chat-status-text">Connecting...</span></div>
+          </div>
+          ${!isClosed
+            ? `<button class="btn btn-secondary btn-sm match-stripe-btn" data-matchid="${esc(matchId)}">${svgIcon('stripe')} Pay Commission</button>`
+            : ''}
+        </div>
+
+        <div class="chat-body" id="chat-body">
+          ${messages.length === 0
+            ? '<div class="chat-empty">No messages yet. Say hello!</div>'
+            : messages.map(m => renderChatMessage(m, user)).join('')}
+        </div>
+
+        <div class="chat-input">
+          <textarea id="chat-input" placeholder="Type a message... (Shift+Enter for newline)" ${isClosed ? 'disabled' : ''}></textarea>
+          <button class="btn btn-primary" id="chat-send-btn" ${isClosed ? 'disabled' : ''}>Send</button>
+        </div>
+      </div>`;
+
+    const body = document.getElementById('chat-body');
+    const input = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('chat-send-btn');
+    const statusDot = document.getElementById('chat-status-dot');
+    const statusText = document.getElementById('chat-status-text');
+
+    body.scrollTop = body.scrollHeight;
+
+    function appendMessage(msg) {
+      // Remove empty placeholder if present
+      const empty = body.querySelector('.chat-empty');
+      if (empty) empty.remove();
+      // Avoid duplicates (e.g. own message echoed via SSE)
+      if (msg.id && body.querySelector(`[data-msg-id="${msg.id}"]`)) return;
+      body.insertAdjacentHTML('beforeend', renderChatMessage(msg, user));
+      body.scrollTop = body.scrollHeight;
+    }
+
+    function appendSystem(text, kind = 'success') {
+      body.insertAdjacentHTML('beforeend', `<div class="chat-system ${kind}">${esc(text)}</div>`);
+      body.scrollTop = body.scrollHeight;
+    }
+
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const result = await store.sendChatMessage(matchId, text);
+      sendBtn.disabled = false;
+      if (!result) { showToast('Failed to send message', 'error'); return; }
+      if (result.blocked) {
+        showToast(result.message || 'Message blocked.', 'warning');
+        // Show inline as a blocked own-message bubble
+        appendMessage({ id: 'local-' + Date.now(), senderId: user.id, body: text, blocked: true, blockedReason: result.reason, createdAt: new Date().toISOString() });
+        input.value = '';
+        return;
+      }
+      if (result.error) { showToast(result.error, 'error'); return; }
+      input.value = '';
+      // Server will broadcast via SSE; we also append optimistically if SSE is slow
+      if (result.message) appendMessage(result.message);
+    }
+
+    sendBtn.addEventListener('click', sendMessage);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+
+    // Stripe pay-commission button (in the chat header)
+    const stripeBtn = main.querySelector('.match-stripe-btn');
+    if (stripeBtn) stripeBtn.addEventListener('click', async () => {
+      stripeBtn.disabled = true;
+      const result = await store.createPaymentSession(matchId);
+      if (result && result.url) { window.location.href = result.url; }
+      else { stripeBtn.disabled = false; showToast((result && result.error) || 'Payment service unavailable', 'error'); }
+    });
+
+    // Open SSE for live updates (only if chat is open)
+    if (!isClosed && typeof EventSource !== 'undefined') {
+      const es = new EventSource(store.chatStreamUrl(matchId));
+      activeEventSource = es;
+
+      es.addEventListener('open', () => {
+        statusDot.classList.remove('disconnected');
+        statusText.textContent = 'Live';
+      });
+      es.addEventListener('error', () => {
+        statusDot.classList.add('disconnected');
+        statusText.textContent = 'Reconnecting...';
+      });
+      es.addEventListener('message', (e) => {
+        try { appendMessage(JSON.parse(e.data)); } catch {}
+      });
+      es.addEventListener('deal_confirmed', () => {
+        appendSystem('✓ Deal confirmed — commission has been paid. Please arrange delivery directly. This chat is now closed.', 'success');
+        input.disabled = true;
+        sendBtn.disabled = true;
+        es.close();
+      });
+    } else if (isClosed) {
+      statusDot.classList.add('disconnected');
+      statusText.textContent = 'Closed';
+    }
+  }
+
+  function renderChatMessage(msg, user) {
+    const own = msg.senderId === user.id;
+    const time = new Date(msg.createdAt).toLocaleTimeString(i18n.getLocale(), { hour: '2-digit', minute: '2-digit' });
+    if (msg.blocked) {
+      // Only the sender sees blocked content; recipients never receive it via the API
+      return `<div class="chat-msg ${own ? 'own' : 'other'} blocked" data-msg-id="${esc(msg.id)}">
+        <div class="chat-msg-bubble">&#9888; Message blocked: contained ${esc(msg.blockedReason || 'contact info')}.</div>
+        <div class="chat-msg-meta">${time}</div>
+      </div>`;
+    }
+    return `<div class="chat-msg ${own ? 'own' : 'other'}" data-msg-id="${esc(msg.id)}">
+      <div class="chat-msg-bubble">${esc(msg.body)}</div>
+      <div class="chat-msg-meta">${time}</div>
+    </div>`;
+  }
+
   // ============================================================
   // PAGE: Payment Success
   // ============================================================

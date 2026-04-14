@@ -203,6 +203,57 @@ async function sendKycResultEmail(user, status, reason) {
 }
 
 // ============================================================
+// Chat: content filter, SSE broadcast
+// ============================================================
+const BLOCKED_PATTERNS = [
+  { name: 'email',     regex: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i },
+  { name: 'phone',     regex: /(?:\+?\d[\s\-().]{0,2}){7,}\d/ },
+  { name: 'whatsapp',  regex: /\b(?:whats[\s\-_.]?app|wa\.me|whatsap)\b/i },
+  { name: 'telegram',  regex: /\b(?:telegram|t\.me\b|@[a-z0-9_]{4,})\b/i },
+  { name: 'signal',    regex: /\bsignal[\s\-_]?(?:app|message|messenger|number|contact)\b/i },
+  { name: 'skype',     regex: /\b(?:skype|skype:|skype\sname)\b/i },
+  { name: 'wechat',    regex: /\b(?:we[\s\-_]?chat)\b/i },
+  // Any external domain that isn't oilbridge
+  { name: 'ext_url',   regex: /\b(?!(?:www\.)?oilbridge\.eu)(?:[a-z0-9-]+\.)+(?:com|net|org|io|co|eu|nl|de|fr|pl|es|me|info|biz|us|uk|app)\b/i },
+];
+
+function checkBlockedContent(text) {
+  for (const p of BLOCKED_PATTERNS) {
+    if (p.regex.test(text)) return p.name;
+  }
+  return null;
+}
+
+// matchId -> Set of { res, userId }
+const sseClients = new Map();
+
+function sseAdd(matchId, client) {
+  if (!sseClients.has(matchId)) sseClients.set(matchId, new Set());
+  sseClients.get(matchId).add(client);
+}
+function sseRemove(matchId, client) {
+  const set = sseClients.get(matchId);
+  if (set) { set.delete(client); if (!set.size) sseClients.delete(matchId); }
+}
+function sseBroadcast(matchId, eventName, payload) {
+  const set = sseClients.get(matchId);
+  if (!set) return;
+  const data = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const c of set) {
+    try { c.res.write(data); } catch {}
+  }
+}
+
+function toMessage(row) {
+  if (!row) return null;
+  return {
+    id: row.id, matchId: row.match_id, senderId: row.sender_id,
+    body: row.body, blocked: !!row.blocked, blockedReason: row.blocked_reason || null,
+    createdAt: row.created_at
+  };
+}
+
+// ============================================================
 // AI KYC Verification (Claude API)
 // ============================================================
 function extractBase64(dataUrl) {
@@ -369,6 +420,16 @@ function initDatabase() {
     delivery_location TEXT NOT NULL, delivery_date TEXT NOT NULL, notes TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
   )`);
+  db.run(`CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    match_id TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    body TEXT NOT NULL,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    blocked_reason TEXT,
+    created_at TEXT NOT NULL
+  )`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_match ON messages(match_id, created_at)`);
   db.run(`CREATE TABLE IF NOT EXISTS matches (
     id TEXT PRIMARY KEY, listing_id TEXT NOT NULL, buyer_id TEXT NOT NULL, seller_id TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', quantity REAL NOT NULL, price_per_unit REAL NOT NULL,
@@ -421,6 +482,8 @@ function createApp() {
       if (matchId) {
         run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
         console.log(`Commission paid for match ${matchId}`);
+        // Notify any open chat clients that the deal is sealed and chat is closed
+        sseBroadcast(matchId, 'deal_confirmed', { matchId, at: new Date().toISOString() });
       }
     }
     res.json({ received: true });
@@ -673,6 +736,156 @@ function createApp() {
       run('UPDATE matches SET status = ? WHERE id = ?', [status, req.params.id]);
     }
     res.json({ success: true });
+  });
+
+  // ========== Chat Routes ==========
+  // Helper: ensure user is a participant in the match
+  function getMatchAsParticipant(matchId, userId) {
+    const m = queryOne('SELECT * FROM matches WHERE id = ?', [matchId]);
+    if (!m) return { error: 'Match not found', code: 404 };
+    if (m.buyer_id !== userId && m.seller_id !== userId) return { error: 'Forbidden', code: 403 };
+    return { match: m };
+  }
+
+  // GET /api/matches/:id/messages — chat history for participants
+  app.get('/api/matches/:id/messages', auth, (req, res) => {
+    const r = getMatchAsParticipant(req.params.id, req.user.id);
+    if (r.error) return res.status(r.code).json({ error: r.error });
+    const rows = queryAll(
+      'SELECT * FROM messages WHERE match_id = ? AND blocked = 0 ORDER BY created_at ASC',
+      [req.params.id]
+    );
+    res.json({
+      match: { id: r.match.id, status: r.match.status, commissionPaid: !!r.match.commission_paid },
+      messages: rows.map(toMessage)
+    });
+  });
+
+  // POST /api/matches/:id/messages — send a message
+  app.post('/api/matches/:id/messages', auth, async (req, res) => {
+    const r = getMatchAsParticipant(req.params.id, req.user.id);
+    if (r.error) return res.status(r.code).json({ error: r.error });
+    if (r.match.status !== 'accepted') return res.status(400).json({ error: 'Chat is only available on accepted matches' });
+    if (r.match.commission_paid) return res.status(400).json({ error: 'Commission already paid — chat is closed' });
+
+    const body = String(req.body.body || '').trim();
+    if (!body) return res.status(400).json({ error: 'Message body required' });
+    if (body.length > 2000) return res.status(400).json({ error: 'Message too long (max 2000 chars)' });
+
+    const blockedReason = checkBlockedContent(body);
+    const id = generateId('msg');
+    const createdAt = new Date().toISOString();
+
+    run(
+      'INSERT INTO messages (id, match_id, sender_id, body, blocked, blocked_reason, created_at) VALUES (?,?,?,?,?,?,?)',
+      [id, req.params.id, req.user.id, body, blockedReason ? 1 : 0, blockedReason || null, createdAt]
+    );
+
+    if (blockedReason) {
+      // Tell sender it was blocked. Recipient is not notified.
+      return res.status(200).json({
+        blocked: true,
+        reason: blockedReason,
+        message: 'Your message contained contact information and was blocked. All deal communication must stay on OilBridge until commission is paid.'
+      });
+    }
+
+    const message = toMessage(queryOne('SELECT * FROM messages WHERE id = ?', [id]));
+    sseBroadcast(req.params.id, 'message', message);
+    res.status(201).json({ success: true, message });
+
+    // Email notification to recipient (fire-and-forget)
+    const recipientId = r.match.buyer_id === req.user.id ? r.match.seller_id : r.match.buyer_id;
+    const sender = queryOne('SELECT company_name FROM users WHERE id = ?', [req.user.id]);
+    const recipient = queryOne('SELECT email, contact_name FROM users WHERE id = ?', [recipientId]);
+    if (recipient && recipient.email) {
+      const baseUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
+      sendEmail({
+        to: recipient.email,
+        subject: `New message from ${sender ? sender.company_name : 'a counterparty'} on OilBridge`,
+        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+          <h2 style="color:#c8860a">New message on OilBridge</h2>
+          <p>Hi ${recipient.contact_name || ''},</p>
+          <p><strong>${sender ? sender.company_name : 'A trader'}</strong> sent you a message about your matched trade.</p>
+          <p style="background:#f5f5f4;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555;border-left:3px solid #c8860a">${body.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</p>
+          <p style="margin-top:24px"><a href="${baseUrl}/#chat/${req.params.id}" style="background:#c8860a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Reply on OilBridge</a></p>
+          <p style="font-size:0.8rem;color:#888;margin-top:24px">For your protection, all communication stays on OilBridge until commission is paid. Sharing direct contact details (email, phone, WhatsApp, etc.) is automatically blocked.</p>
+        </div>`
+      }).catch(err => console.error('Chat notification email failed:', err.message));
+    }
+  });
+
+  // GET /api/matches/:id/stream — SSE for live updates (token via query param since EventSource lacks headers)
+  app.get('/api/matches/:id/stream', (req, res) => {
+    const token = req.query.token;
+    const session = token ? queryOne('SELECT user_id FROM sessions WHERE token = ?', [token]) : null;
+    if (!session) return res.status(401).end();
+    const user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
+    if (!user) return res.status(401).end();
+
+    const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+    if (!m) return res.status(404).end();
+    if (m.buyer_id !== user.id && m.seller_id !== user.id && user.role !== 'admin') return res.status(403).end();
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+    res.write(`: connected\n\n`);
+
+    const client = { res, userId: user.id };
+    sseAdd(req.params.id, client);
+
+    const ka = setInterval(() => {
+      try { res.write(`: ka\n\n`); } catch {}
+    }, 25000);
+
+    req.on('close', () => {
+      clearInterval(ka);
+      sseRemove(req.params.id, client);
+    });
+  });
+
+  // GET /api/admin/chats — overview of all chat threads
+  app.get('/api/admin/chats', auth, adminOnly, (req, res) => {
+    const rows = queryAll(`
+      SELECT m.id as match_id, m.status, m.commission_paid,
+             m.buyer_id, m.seller_id,
+             COUNT(msg.id) as msg_count,
+             SUM(CASE WHEN msg.blocked = 1 THEN 1 ELSE 0 END) as blocked_count,
+             MAX(msg.created_at) as last_at
+      FROM matches m
+      LEFT JOIN messages msg ON msg.match_id = m.id
+      GROUP BY m.id
+      HAVING COUNT(msg.id) > 0
+      ORDER BY last_at DESC
+    `);
+    const enriched = rows.map(r => {
+      const buyer = queryOne('SELECT company_name FROM users WHERE id = ?', [r.buyer_id]);
+      const seller = queryOne('SELECT company_name FROM users WHERE id = ?', [r.seller_id]);
+      return {
+        matchId: r.match_id, status: r.status, commissionPaid: !!r.commission_paid,
+        buyer: buyer ? buyer.company_name : null, seller: seller ? seller.company_name : null,
+        messageCount: r.msg_count, blockedCount: r.blocked_count || 0,
+        lastMessageAt: r.last_at
+      };
+    });
+    res.json(enriched);
+  });
+
+  // GET /api/admin/chats/:matchId — full chat including blocked messages
+  app.get('/api/admin/chats/:matchId', auth, adminOnly, (req, res) => {
+    const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.matchId]);
+    if (!m) return res.status(404).json({ error: 'Match not found' });
+    const messages = queryAll('SELECT * FROM messages WHERE match_id = ? ORDER BY created_at ASC', [req.params.matchId]).map(toMessage);
+    const buyer = queryOne('SELECT company_name, contact_name, email FROM users WHERE id = ?', [m.buyer_id]);
+    const seller = queryOne('SELECT company_name, contact_name, email FROM users WHERE id = ?', [m.seller_id]);
+    res.json({
+      match: { id: m.id, status: m.status, commissionPaid: !!m.commission_paid, buyerId: m.buyer_id, sellerId: m.seller_id },
+      buyer, seller, messages
+    });
   });
 
   // ========== Stripe Payment Routes ==========

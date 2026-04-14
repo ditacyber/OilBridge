@@ -115,9 +115,10 @@ class Store {
   async createPaymentSession(matchId) { return await this.api('POST', '/payments/create-session', { matchId }); }
   async verifyPaymentSession(sessionId) { return await this.api('GET', '/payments/verify-session?session_id=' + sessionId); }
 
-  // --- KYC (Stripe Identity) ---
+  // --- KYC (Stripe Identity with manual-upload fallback) ---
   async startKyc() { return await this.api('POST', '/kyc/start'); }
   async getKycStatus() { return await this.api('GET', '/kyc/status'); }
+  async uploadKycDocuments(documents) { return await this.api('POST', '/kyc/upload', { documents }); }
 
   // --- Chat ---
   async getChatMessages(matchId) { return await this.api('GET', '/matches/' + matchId + '/messages'); }

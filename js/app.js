@@ -157,6 +157,7 @@
       'payment-success': renderPaymentSuccess,
       chat: renderChat,
       'kyc-complete': renderKycComplete,
+      'kyc-manual': renderKycManual,
     };
 
     const renderer = pages[route.page];
@@ -706,6 +707,10 @@
       if (kyc && kyc.url) {
         // Redirect to Stripe-hosted identity verification
         window.location.href = kyc.url;
+      } else if (kyc && kyc.fallback === 'document_upload') {
+        // Stripe Identity not available — fall back to manual document upload
+        showToast(kyc.error || 'Stripe Identity unavailable — please upload documents for manual review.', 'info');
+        navigate('kyc-manual');
       } else {
         showToast((kyc && kyc.error) || 'Identity verification is temporarily unavailable. You can retry from your profile.', 'error');
         navigate('kyc-complete');
@@ -999,8 +1004,12 @@
       kycBtn.disabled = true;
       kycBtn.innerHTML = '<span class="spinner"></span> Starting...';
       const result = await store.startKyc();
-      if (result && result.url) window.location.href = result.url;
-      else {
+      if (result && result.url) {
+        window.location.href = result.url;
+      } else if (result && result.fallback === 'document_upload') {
+        showToast(result.error || 'Stripe Identity unavailable — please upload documents for manual review.', 'info');
+        navigate('kyc-manual');
+      } else {
         kycBtn.disabled = false;
         kycBtn.textContent = user.kycStatus === 'rejected' ? 'Retry Identity Verification' : 'Start Identity Verification';
         showToast((result && result.error) || 'Could not start verification', 'error');
@@ -1523,8 +1532,16 @@
         retryBtn.disabled = true;
         retryBtn.innerHTML = '<span class="spinner"></span> Starting...';
         const kyc = await store.startKyc();
-        if (kyc && kyc.url) window.location.href = kyc.url;
-        else { retryBtn.disabled = false; retryBtn.textContent = 'Try Verification Again'; showToast((kyc && kyc.error) || 'Could not start verification', 'error'); }
+        if (kyc && kyc.url) {
+          window.location.href = kyc.url;
+        } else if (kyc && kyc.fallback === 'document_upload') {
+          showToast(kyc.error || 'Stripe Identity unavailable — redirecting to manual upload.', 'info');
+          navigate('kyc-manual');
+        } else {
+          retryBtn.disabled = false;
+          retryBtn.textContent = 'Try Verification Again';
+          showToast((kyc && kyc.error) || 'Could not start verification', 'error');
+        }
       });
     }
 
@@ -1564,6 +1581,121 @@
         if (attempts >= maxAttempts) renderState('timeout');
       }
     }, 2000);
+  }
+
+  // ============================================================
+  // PAGE: KYC Manual Upload (fallback when Stripe Identity is unavailable)
+  // ============================================================
+  async function renderKycManual(main) {
+    setPageMeta('Manual Identity Verification', 'Upload your ID documents for manual review by an administrator.');
+    const user = store.getCurrentUser();
+    if (!user) { navigate('login'); return; }
+
+    let uploaded = [];
+
+    function render() {
+      const fileListHtml = uploaded.map((d, i) => `
+        <div class="upload-file-item" style="padding:10px 12px">
+          ${svgIcon('file')}
+          <div style="flex:1;min-width:0">
+            <div class="file-name">${esc(d.name)}</div>
+            <div class="text-muted" style="font-size:0.75rem">${esc(d.type)} &middot; ${(d.size/1024).toFixed(1)} KB</div>
+          </div>
+          <button class="file-remove kyc-remove-btn" data-idx="${i}">&times;</button>
+        </div>
+      `).join('');
+
+      const disabled = uploaded.length === 0;
+
+      main.innerHTML = `
+        <section class="page-section">
+          <div class="container" style="max-width:640px">
+            <a href="#profile" class="btn btn-ghost btn-sm mb-16">&larr; Back to Profile</a>
+            <div class="card" style="padding:32px">
+              <h2 style="margin-bottom:8px">Manual Identity Verification</h2>
+              <p class="text-muted" style="font-size:0.9rem;line-height:1.6;margin-bottom:20px">
+                Stripe Identity is not available right now, so we'll verify your account the old-fashioned way.
+                Upload 1–3 clear photos of your government-issued ID (passport, driver's licence or national ID card)
+                and an administrator will review them within 1–3 business days. You'll receive an email with the result.
+              </p>
+
+              <div class="commission-banner" style="margin-bottom:24px">
+                <div class="commission-banner-icon">&#128274;</div>
+                <div class="commission-banner-text">
+                  Uploaded documents are encrypted at rest and only viewed by authorised administrators.
+                  For liveness, include one photo of you holding the ID next to your face.
+                </div>
+              </div>
+
+              <div class="upload-zone" id="kyc-manual-zone">
+                <div class="upload-zone-icon">${svgIcon('upload')}</div>
+                <div class="upload-zone-text">Click to upload or drag photos here</div>
+                <div class="upload-zone-hint">JPG or PNG &middot; 100 KB – 5 MB &middot; up to 3 files</div>
+                <input type="file" id="kyc-manual-input" multiple accept="image/jpeg,image/png" style="display:none">
+              </div>
+
+              <div class="upload-file-list" style="margin-top:12px">${fileListHtml}</div>
+
+              <button class="btn btn-primary btn-block btn-lg mt-24" id="kyc-manual-submit" ${disabled ? 'disabled' : ''}>
+                Submit for Manual Review
+              </button>
+            </div>
+          </div>
+        </section>`;
+
+      const zone = document.getElementById('kyc-manual-zone');
+      const input = document.getElementById('kyc-manual-input');
+      const submit = document.getElementById('kyc-manual-submit');
+
+      zone.addEventListener('click', () => input.click());
+      zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
+      zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+      zone.addEventListener('drop', (e) => { e.preventDefault(); zone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
+      input.addEventListener('change', (e) => handleFiles(e.target.files));
+
+      document.querySelectorAll('.kyc-remove-btn').forEach(b => {
+        b.addEventListener('click', () => { uploaded.splice(parseInt(b.dataset.idx, 10), 1); render(); });
+      });
+
+      submit.addEventListener('click', async () => {
+        submit.disabled = true;
+        submit.innerHTML = '<span class="spinner"></span> Submitting...';
+        const r = await store.uploadKycDocuments(uploaded);
+        if (r && r.success) {
+          showToast(r.message || 'Documents submitted for review.', 'success');
+          await store.refreshUser();
+          updateNav();
+          navigate('profile');
+        } else {
+          submit.disabled = false;
+          submit.textContent = 'Submit for Manual Review';
+          showToast((r && r.error) || 'Upload failed', 'error');
+        }
+      });
+    }
+
+    async function handleFiles(files) {
+      const VALID = ['image/jpeg', 'image/jpg', 'image/png'];
+      const MIN = 100 * 1024, MAX = 5 * 1024 * 1024, LIMIT = 3;
+      for (const f of Array.from(files)) {
+        if (uploaded.length >= LIMIT) { showToast(`Maximum ${LIMIT} files.`, 'error'); break; }
+        if (!VALID.includes(f.type)) { showToast(`${f.name}: only JPG or PNG accepted.`, 'error'); continue; }
+        if (f.size < MIN) { showToast(`${f.name}: too small (min 100 KB).`, 'error'); continue; }
+        if (f.size > MAX) { showToast(`${f.name}: too large (max 5 MB).`, 'error'); continue; }
+        try {
+          const dataUrl = await new Promise((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result);
+            r.onerror = rej;
+            r.readAsDataURL(f);
+          });
+          uploaded.push({ name: f.name, type: f.type, size: f.size, dataUrl });
+        } catch { showToast(`Failed to read ${f.name}`, 'error'); }
+      }
+      render();
+    }
+
+    render();
   }
 
   // ============================================================

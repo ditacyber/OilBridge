@@ -910,13 +910,42 @@ function createApp() {
   }));
 
   // ========== Stripe Identity (KYC) Routes ==========
+  // Heuristic for detecting errors where the Stripe account doesn't have
+  // Identity enabled (or is in a region/country where it isn't available).
+  // When this happens we fall back to a manual document-upload flow.
+  function isIdentityUnavailableError(err) {
+    if (!err) return false;
+    const msg = String(err.message || '').toLowerCase();
+    const code = String(err.code || '').toLowerCase();
+    const type = String(err.type || '').toLowerCase();
+    return (
+      // Most common: account hasn't enabled the product
+      msg.includes('identity') && (msg.includes('not enabled') || msg.includes('not available') || msg.includes('not activated') || msg.includes('does not have access')) ||
+      msg.includes("this api call requires the 'identity'") ||
+      msg.includes('account_invalid') ||
+      code === 'account_inactive' ||
+      type === 'stripepermissionerror'
+    );
+  }
+
   // POST /api/kyc/start — creates a Stripe Identity VerificationSession and
-  // returns the hosted URL the client should redirect to.
+  // returns the hosted URL the client should redirect to. Falls back to
+  // document upload if Stripe Identity isn't enabled on the account.
   app.post('/api/kyc/start', auth, ah(async (req, res) => {
-    if (!stripe) return res.status(503).json({ error: 'Stripe is not configured. Set STRIPE_SECRET_KEY.' });
-    if (req.user.kyc_status === 'verified') return res.status(400).json({ error: 'Already verified' });
+    if (!stripe) {
+      console.warn('[KYC] /api/kyc/start called but STRIPE_SECRET_KEY is not set');
+      return res.status(503).json({
+        error: 'Stripe is not configured. Set STRIPE_SECRET_KEY.',
+        code: 'stripe_not_configured',
+        fallback: 'document_upload'
+      });
+    }
+    if (req.user.kyc_status === 'verified') {
+      return res.status(400).json({ error: 'Already verified', code: 'already_verified' });
+    }
 
     const baseUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
+    console.log(`[KYC] Starting Stripe Identity for ${req.user.email} (return_url=${baseUrl}/#kyc-complete)`);
     try {
       const session = await stripe.identity.verificationSessions.create({
         type: 'document',
@@ -924,8 +953,8 @@ function createApp() {
         metadata: {
           userId: req.user.id,
           companyName: req.user.company_name || '',
-          // Optional reference — Stripe Identity does not use price IDs, this is purely
-          // for accounting/reconciliation on your side if you want it.
+          // Reference only — Stripe Identity is priced per verification at
+          // the account level, this metadata field doesn't control pricing.
           priceId: process.env.STRIPE_IDENTITY_PRICE_ID || ''
         },
         options: {
@@ -942,17 +971,80 @@ function createApp() {
       run('UPDATE users SET stripe_identity_session_id = ?, stripe_identity_status = ? WHERE id = ?',
           [session.id, session.status, req.user.id]);
 
+      console.log(`[KYC] Stripe Identity session ${session.id} created for ${req.user.email}`);
       res.json({ url: session.url, sessionId: session.id, status: session.status });
     } catch (err) {
-      console.error('Stripe Identity session creation failed:', err.message);
-      res.status(500).json({ error: 'Failed to start identity verification' });
+      // Verbose logging so the operator can diagnose real issues from Railway logs.
+      console.error('[KYC] Stripe Identity session creation FAILED');
+      console.error('      type:       ', err && err.type);
+      console.error('      code:       ', err && err.code);
+      console.error('      statusCode: ', err && err.statusCode);
+      console.error('      message:    ', err && err.message);
+      console.error('      requestId:  ', err && err.requestId);
+      if (err && err.raw && err.raw.param) console.error('      param:      ', err.raw.param);
+
+      if (isIdentityUnavailableError(err)) {
+        console.warn('[KYC] Stripe Identity appears to be disabled on this account — offering document-upload fallback.');
+        return res.status(503).json({
+          error: 'Stripe Identity is not enabled on this Stripe account. You can still complete verification by uploading your ID documents for manual review.',
+          code: 'identity_not_enabled',
+          stripeType: err && err.type,
+          stripeCode: err && err.code,
+          fallback: 'document_upload'
+        });
+      }
+
+      res.status(500).json({
+        error: 'Failed to start identity verification: ' + (err && err.message ? err.message : 'unknown Stripe error'),
+        code: (err && err.code) || 'stripe_error',
+        stripeType: err && err.type,
+        stripeRequestId: err && err.requestId,
+        fallback: 'document_upload'
+      });
     }
+  }));
+
+  // POST /api/kyc/upload — manual document upload fallback for cases where
+  // Stripe Identity isn't available. Documents are stored and reviewed by
+  // an admin.
+  app.post('/api/kyc/upload', auth, ah(async (req, res) => {
+    if (req.user.kyc_status === 'verified') {
+      return res.status(400).json({ error: 'Already verified' });
+    }
+
+    const { documents } = req.body;
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return res.status(400).json({ error: 'At least one document is required' });
+    }
+    if (documents.length > 3) {
+      return res.status(400).json({ error: 'Maximum 3 documents allowed' });
+    }
+
+    const VALID = ['image/jpeg', 'image/jpg', 'image/png'];
+    const MIN = 100 * 1024, MAX = 5 * 1024 * 1024;
+    for (const d of documents) {
+      if (!d || typeof d !== 'object') return res.status(400).json({ error: 'Invalid document format' });
+      if (!d.name || !d.dataUrl) return res.status(400).json({ error: 'Each document must have name and content' });
+      if (!VALID.includes(d.type)) return res.status(400).json({ error: `${d.name}: only JPG and PNG accepted` });
+      if (typeof d.size !== 'number' || d.size < MIN) return res.status(400).json({ error: `${d.name}: too small (min 100 KB)` });
+      if (d.size > MAX) return res.status(400).json({ error: `${d.name}: too large (max 5 MB)` });
+      if (typeof d.dataUrl !== 'string' || !d.dataUrl.startsWith('data:')) return res.status(400).json({ error: `${d.name}: invalid content` });
+    }
+
+    run('UPDATE users SET documents = ?, kyc_status = ? WHERE id = ?',
+        [JSON.stringify(documents), 'pending', req.user.id]);
+
+    console.log(`[KYC] Manual upload: ${req.user.email} submitted ${documents.length} document(s) for admin review`);
+    res.json({
+      success: true,
+      message: 'Documents submitted for manual review. An admin will review them and you will receive an email with the result.'
+    });
   }));
 
   // GET /api/kyc/status — returns the caller's current KYC status (for polling
   // after the user returns from the Stripe-hosted flow).
   app.get('/api/kyc/status', auth, (req, res) => {
-    const u = queryOne('SELECT kyc_status, stripe_identity_status, stripe_identity_session_id, ai_verification FROM users WHERE id = ?', [req.user.id]);
+    const u = queryOne('SELECT kyc_status, stripe_identity_status, stripe_identity_session_id, ai_verification, documents FROM users WHERE id = ?', [req.user.id]);
     let reason = null;
     try {
       if (u && u.ai_verification) {
@@ -960,11 +1052,14 @@ function createApp() {
         reason = parsed.summary || parsed.reason || null;
       }
     } catch {}
+    let docCount = 0;
+    try { docCount = (JSON.parse((u && u.documents) || '[]') || []).length; } catch {}
     res.json({
       kycStatus: (u && u.kyc_status) || 'pending',
       stripeStatus: (u && u.stripe_identity_status) || null,
       sessionId: (u && u.stripe_identity_session_id) || null,
-      reason
+      reason,
+      hasManualUpload: docCount > 0
     });
   });
 

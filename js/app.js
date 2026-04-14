@@ -202,12 +202,15 @@
   // ============================================================
   async function renderHome(main) {
     setPageMeta(null, "Europe's leading B2B oil marketplace. Buy and sell crude oil, diesel, gasoline, jet fuel, LNG, and petrochemicals with KYC-verified traders across 27 EU countries.");
-    const user = store.getCurrentUser();
-    let stats = { activeListings: 0, verifiedUsers: 0, estimatedRevenue: 0 };
-    if (store.isAdmin()) {
-      stats = await store.getStats();
-    }
-    const listings = await store.getListings({ limit: 6 });
+    const [publicStats, listings] = await Promise.all([
+      store.getPublicStats(),
+      store.getListings({ limit: 6 })
+    ]);
+
+    const completedDeals = publicStats.completedDeals || 0;
+    const verifiedTraders = publicStats.verifiedTraders || 0;
+    const activeListings = publicStats.activeListings || listings.length || 0;
+    const totalVolumeEur = publicStats.totalVolumeEur || 0;
 
     main.innerHTML = `
       <section class="hero">
@@ -219,10 +222,57 @@
             <a href="#register" class="btn btn-secondary btn-lg" data-i18n="hero_cta_register">${esc(i18n.t('hero_cta_register'))}</a>
           </div>
           <div class="hero-stats">
-            <div class="hero-stat"><div class="hero-stat-value">${listings.length || 0}</div><div class="hero-stat-label" data-i18n="hero_stat_listings">${esc(i18n.t('hero_stat_listings'))}</div></div>
-            <div class="hero-stat"><div class="hero-stat-value">${stats.verifiedUsers || 0}</div><div class="hero-stat-label" data-i18n="hero_stat_traders">${esc(i18n.t('hero_stat_traders'))}</div></div>
-            <div class="hero-stat"><div class="hero-stat-value">${stats.estimatedRevenue ? formatCurrency(stats.estimatedRevenue / 0.032, 'EUR').split('.')[0] : '-'}</div><div class="hero-stat-label" data-i18n="hero_stat_volume">${esc(i18n.t('hero_stat_volume'))}</div></div>
-            <div class="hero-stat"><div class="hero-stat-value">27</div><div class="hero-stat-label" data-i18n="hero_stat_countries">${esc(i18n.t('hero_stat_countries'))}</div></div>
+            <div class="hero-stat">
+              <div class="hero-stat-value" data-count-to="${completedDeals}" data-format="number">0</div>
+              <div class="hero-stat-label">Completed Deals</div>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-value" data-count-to="${totalVolumeEur}" data-format="euro-compact">&euro;0</div>
+              <div class="hero-stat-label">Total Volume Traded</div>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-value" data-count-to="${verifiedTraders}" data-format="number">0</div>
+              <div class="hero-stat-label">Verified Traders</div>
+            </div>
+            <div class="hero-stat">
+              <div class="hero-stat-value" data-count-to="${activeListings}" data-format="number">0</div>
+              <div class="hero-stat-label" data-i18n="hero_stat_listings">${esc(i18n.t('hero_stat_listings'))}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="trust-badges-section">
+        <div class="container">
+          <div class="trust-badges">
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#128737;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">KYC Verified Traders</div>
+                <div class="trust-badge-sub">Identity checked &amp; approved</div>
+              </div>
+            </div>
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#128274;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">SSL Secured</div>
+                <div class="trust-badge-sub">End-to-end encryption</div>
+              </div>
+            </div>
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#127466;&#127482;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">EU Compliant</div>
+                <div class="trust-badge-sub">GDPR &amp; NDA protected</div>
+              </div>
+            </div>
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#128179;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">Stripe Secured Payments</div>
+                <div class="trust-badge-sub">PCI-DSS compliant</div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -253,6 +303,41 @@
         </div>
       </section>` : ''}
     `;
+
+    // Animate count-up on all [data-count-to] elements
+    requestAnimationFrame(() => startCountUpAnimations(main));
+  }
+
+  // Animated count-up from 0 to target, ~1.5s with easeOutQuart
+  function startCountUpAnimations(root) {
+    root.querySelectorAll('[data-count-to]').forEach(el => {
+      const to = parseFloat(el.dataset.countTo) || 0;
+      const format = el.dataset.format || 'number';
+      countUpElement(el, to, 1500, format);
+    });
+  }
+
+  function formatCountUp(value, format) {
+    if (format === 'euro-compact') {
+      if (value >= 1e9) return '€' + (value / 1e9).toFixed(1) + 'B';
+      if (value >= 1e6) return '€' + (value / 1e6).toFixed(1) + 'M';
+      if (value >= 1e3) return '€' + (value / 1e3).toFixed(1) + 'K';
+      return '€' + Math.round(value).toLocaleString();
+    }
+    if (format === 'euro') return '€' + Math.round(value).toLocaleString();
+    return Math.round(value).toLocaleString();
+  }
+
+  function countUpElement(el, to, duration, format) {
+    if (to <= 0) { el.textContent = formatCountUp(0, format); return; }
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - t, 4); // easeOutQuart
+      el.textContent = formatCountUp(to * eased, format);
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
   }
 
   function renderListingCard(listing) {

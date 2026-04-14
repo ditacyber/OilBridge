@@ -1020,6 +1020,26 @@ function createApp() {
     });
   });
 
+  // ========== Public Stats (homepage trust indicators, unauthenticated) ==========
+  // Approximate FX rates for display only (Apr 2026 ballpark).
+  // In production you'd fetch these from an FX API and cache them.
+  const FX_TO_EUR = { EUR: 1.0, USD: 0.92, GBP: 1.17 };
+  app.get('/api/public-stats', (req, res) => {
+    try {
+      const completedDeals = (queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed'") || {}).c || 0;
+      const verifiedTraders = (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'verified'") || {}).c || 0;
+      const activeListings = (queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'") || {}).c || 0;
+      const completedMatches = queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed'");
+      const totalVolumeEur = completedMatches.reduce((sum, m) =>
+        sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0
+      );
+      res.json({ completedDeals, verifiedTraders, activeListings, totalVolumeEur: Math.round(totalVolumeEur) });
+    } catch (err) {
+      console.error('[public-stats]', err.message);
+      res.json({ completedDeals: 0, verifiedTraders: 0, activeListings: 0, totalVolumeEur: 0 });
+    }
+  });
+
   // ========== Health Check (for Railway / uptime monitoring) ==========
   app.get(['/health', '/api/health'], (req, res) => {
     let dbOk = true, dbError = null;

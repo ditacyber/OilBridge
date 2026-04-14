@@ -125,6 +125,7 @@ class Store {
 
   // --- Stats ---
   async getStats() { return (await this.api('GET', '/stats')) || {}; }
+  async getPublicStats() { return (await this.api('GET', '/public-stats')) || {}; }
 
   // --- Local UI prefs (not in DB) ---
   hasOnboarded(userId) { return localStorage.getItem('ob_onboarded_' + userId) === 'true'; }

@@ -167,7 +167,7 @@ async function sendEmail({ to, subject, html }) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        from: process.env.EMAIL_FROM || 'OilBridge <noreply@oilbridge.eu>',
+        from: process.env.EMAIL_FROM || 'OilBridge <contact@oilbridge.eu>',
         to: [to], subject, html
       })
     });

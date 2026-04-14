@@ -486,12 +486,48 @@ function initDatabase() {
 }
 
 function seedDatabase() {
-  // Only seed the admin account so the platform can be managed
+  // Admin credentials come from env vars. If not set, we generate a
+  // cryptographically random initial password and print it ONCE to the
+  // server logs so the operator can capture it. The password is never
+  // checked into source.
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@oilbridge.eu';
+  let adminPassword = process.env.ADMIN_PASSWORD;
+  let generated = false;
+  if (!adminPassword) {
+    adminPassword = crypto.randomBytes(18).toString('base64url');
+    generated = true;
+  }
   db.run(
     'INSERT INTO users (id,email,password,role,company_name,company_reg,company_country,company_vat,contact_name,contact_phone,contact_position,kyc_status,nda_accepted,documents,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-    ['admin-001','admin@oilbridge.eu',hashPassword('NCH9fqfY5vtTz9HIi0svNA'),'admin','OilBridge','KVK-00000000','Netherlands','','Platform Administrator','','System Administrator','verified',1,'[]',new Date().toISOString()]
+    ['admin-001', adminEmail, hashPassword(adminPassword), 'admin', 'OilBridge', 'KVK-00000000', 'Netherlands', '', 'Platform Administrator', '', 'System Administrator', 'verified', 1, '[]', new Date().toISOString()]
   );
-  console.log('Database initialized with admin account.');
+  if (generated) {
+    console.log('');
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('  INITIAL ADMIN ACCOUNT CREATED');
+    console.log('  EMAIL:    ' + adminEmail);
+    console.log('  PASSWORD: ' + adminPassword);
+    console.log('  Save this NOW — it will not be shown again.');
+    console.log('  Set ADMIN_PASSWORD env var to override on next deploy.');
+    console.log('═══════════════════════════════════════════════════════════════');
+    console.log('');
+  } else {
+    console.log(`Database initialized with admin account (${adminEmail}).`);
+  }
+}
+
+// Rotate the admin password in place when ADMIN_PASSWORD env var changes.
+// Called on every startup after the DB is loaded.
+function syncAdminPassword() {
+  if (!process.env.ADMIN_PASSWORD) return;
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@oilbridge.eu';
+  const admin = queryOne("SELECT id, password FROM users WHERE role = 'admin' AND email = ?", [adminEmail]);
+  if (!admin) return;
+  // Only re-hash and write if the current env password doesn't match the stored one
+  if (!verifyPassword(process.env.ADMIN_PASSWORD, admin.password)) {
+    run('UPDATE users SET password = ? WHERE id = ?', [hashPassword(process.env.ADMIN_PASSWORD), admin.id]);
+    console.log(`[admin] Password rotated from ADMIN_PASSWORD env var (${adminEmail}).`);
+  }
 }
 
 // ============================================================
@@ -1131,6 +1167,7 @@ function createApp() {
   }
 
   initDatabase();
+  syncAdminPassword();
 
   const app = createApp();
   app.listen(PORT, '0.0.0.0', () => console.log(`OilBridge running on 0.0.0.0:${PORT}`));

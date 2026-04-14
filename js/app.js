@@ -527,10 +527,6 @@
             <span data-i18n="login_no_account">${esc(i18n.t('login_no_account'))}</span>
             <a href="#register" data-i18n="login_register_link">${esc(i18n.t('login_register_link'))}</a>
           </p>
-          <div class="divider mt-24">Admin Access</div>
-          <div style="font-size:0.8rem;color:var(--text-muted);line-height:1.8">
-            <p><strong>Admin:</strong> admin@oilbridge.eu / NCH9fqfY5vtTz9HIi0svNA</p>
-          </div>
         </div>
       </div>`;
 

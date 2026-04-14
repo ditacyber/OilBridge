@@ -128,11 +128,14 @@ function toListing(row) {
 
 function toMatch(row) {
   if (!row) return null;
+  let evidence = null;
+  try { if (row.evidence) evidence = JSON.parse(row.evidence); } catch {}
   return {
     id: row.id, listingId: row.listing_id, buyerId: row.buyer_id, sellerId: row.seller_id,
     status: row.status, quantity: row.quantity, pricePerUnit: row.price_per_unit,
     totalValue: row.total_value, commission: row.commission, currency: row.currency,
     commissionPaid: !!row.commission_paid, stripeSessionId: row.stripe_session_id || null,
+    hasEvidence: !!evidence,
     createdAt: row.created_at
   };
 }
@@ -264,6 +267,44 @@ function toMessage(row) {
 }
 
 
+// Snapshot all data relevant to a match at the moment of creation so we have
+// permanent chargeback evidence even if the listing is later deleted or the
+// parties' details change.
+function buildMatchEvidence(listingRow, buyerId, sellerId, quantity, price) {
+  const buyer = queryOne('SELECT id, email, company_name, company_reg, company_country, contact_name FROM users WHERE id = ?', [buyerId]);
+  const seller = queryOne('SELECT id, email, company_name, company_reg, company_country, contact_name FROM users WHERE id = ?', [sellerId]);
+  return {
+    snapshotAt: new Date().toISOString(),
+    listing: listingRow ? {
+      id: listingRow.id,
+      type: listingRow.type,
+      oilType: listingRow.oil_type,
+      quantity: listingRow.quantity,
+      unit: listingRow.unit,
+      price: listingRow.price,
+      currency: listingRow.currency,
+      deliveryLocation: listingRow.delivery_location,
+      deliveryDate: listingRow.delivery_date,
+      notes: listingRow.notes,
+      status: listingRow.status,
+      createdAt: listingRow.created_at,
+      ownerUserId: listingRow.user_id
+    } : null,
+    buyer: buyer ? {
+      id: buyer.id, email: buyer.email, companyName: buyer.company_name,
+      companyReg: buyer.company_reg, companyCountry: buyer.company_country,
+      contactName: buyer.contact_name
+    } : null,
+    seller: seller ? {
+      id: seller.id, email: seller.email, companyName: seller.company_name,
+      companyReg: seller.company_reg, companyCountry: seller.company_country,
+      contactName: seller.contact_name
+    } : null,
+    agreedQuantity: quantity,
+    agreedPrice: price
+  };
+}
+
 function checkForMatches(newListing) {
   const compatible = queryAll(
     "SELECT * FROM listings WHERE id != ? AND status = 'active' AND oil_type = ? AND type != ? AND user_id != ?",
@@ -281,10 +322,11 @@ function checkForMatches(newListing) {
       if (!existing) {
         const qty = Math.min(buy.quantity, sell.quantity);
         const total = qty * sell.price;
+        const evidence = buildMatchEvidence(sell, buy.user_id, sell.user_id, qty, sell.price);
         run(
-          `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, currency, created_at)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
-          [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, total * COMMISSION_RATE, sell.currency, new Date().toISOString()]
+          `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, currency, created_at, evidence)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+          [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, total * COMMISSION_RATE, sell.currency, new Date().toISOString(), JSON.stringify(evidence)]
         );
       }
     }
@@ -339,6 +381,9 @@ function initDatabase() {
   // Migrate: add Stripe Identity columns (new KYC system)
   try { db.run('ALTER TABLE users ADD COLUMN stripe_identity_session_id TEXT'); } catch(e) {}
   try { db.run('ALTER TABLE users ADD COLUMN stripe_identity_status TEXT'); } catch(e) {}
+
+  // Migrate: add chargeback-evidence column to matches (listing + parties snapshot)
+  try { db.run('ALTER TABLE matches ADD COLUMN evidence TEXT'); } catch(e) {}
 
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
@@ -395,6 +440,9 @@ function syncAdminPassword() {
 // ============================================================
 function createApp() {
   const app = express();
+
+  // Behind Railway's proxy — honor X-Forwarded-For so req.ip is the client IP
+  app.set('trust proxy', 1);
 
   // --- Stripe webhook (needs raw body — must be before express.json) ---
   app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), (req, res) => {
@@ -507,13 +555,70 @@ function createApp() {
     next();
   }
 
+  // ========== Registration rate limit + sanctioned country block ==========
+  // In-memory rolling 24h limiter keyed by client IP. State is not persisted
+  // across server restarts — acceptable for spam prevention at this scale;
+  // migrate to the DB if higher guarantees are needed.
+  const REG_LIMITS = new Map();               // ip -> { count, windowStart }
+  const REG_WINDOW_MS = 24 * 60 * 60 * 1000;  // 24 hours
+  const REG_MAX = 5;
+
+  // Periodic cleanup so the map doesn't grow unbounded
+  setInterval(() => {
+    const cutoff = Date.now() - REG_WINDOW_MS;
+    for (const [ip, v] of REG_LIMITS) if (v.windowStart < cutoff) REG_LIMITS.delete(ip);
+  }, 60 * 60 * 1000).unref();
+
+  // EU + OFAC sanctioned country list (lowercased, with common name variants)
+  const SANCTIONED_COUNTRIES = new Set([
+    'russia', 'russian federation', 'ru', 'rus',
+    'belarus', 'by', 'blr',
+    'iran', 'islamic republic of iran', 'ir', 'irn',
+    'north korea', 'democratic people\'s republic of korea', "democratic people's republic of korea",
+    'dprk', 'korea, north', 'korea (north)', 'kp', 'prk',
+    'syria', 'syrian arab republic', 'sy', 'syr',
+    'cuba', 'cu', 'cub'
+  ]);
+
+  function isSanctionedCountry(country) {
+    if (!country) return false;
+    return SANCTIONED_COUNTRIES.has(String(country).trim().toLowerCase());
+  }
+
+  function registrationRateLimit(req, res, next) {
+    const ip = req.ip || 'unknown';
+    const now = Date.now();
+    const entry = REG_LIMITS.get(ip);
+    if (!entry || now - entry.windowStart > REG_WINDOW_MS) {
+      REG_LIMITS.set(ip, { count: 1, windowStart: now });
+      return next();
+    }
+    if (entry.count >= REG_MAX) {
+      const retrySec = Math.ceil((REG_WINDOW_MS - (now - entry.windowStart)) / 1000);
+      console.warn(`[rate-limit] Blocked registration from ${ip} — ${entry.count} attempts in 24h`);
+      return res.status(429).set('Retry-After', String(retrySec)).json({
+        error: `Too many registration attempts from your network. Please try again in ${Math.ceil(retrySec/3600)} hour(s).`,
+        retryAfterSeconds: retrySec
+      });
+    }
+    entry.count++;
+    next();
+  }
+
   // ========== Auth Routes ==========
   // Registration no longer collects KYC documents — identity is verified
   // via Stripe Identity after the account is created (see /api/kyc/start).
-  app.post('/api/auth/register', (req, res) => {
+  app.post('/api/auth/register', registrationRateLimit, (req, res) => {
     const { email, password, companyName, companyReg, companyCountry, companyVat, contactName, contactPhone, contactPosition, ndaAccepted } = req.body;
     if (!email || !password || !companyName || !companyReg || !companyCountry || !contactName) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (isSanctionedCountry(companyCountry)) {
+      console.warn(`[sanctions] Blocked registration for ${email} — country "${companyCountry}" is sanctioned`);
+      return res.status(403).json({
+        error: 'Registrations from this country are not permitted due to EU sanctions compliance. If you believe this is a mistake, please contact contact@oilbridge.eu.',
+        code: 'country_sanctioned'
+      });
     }
     if (!ndaAccepted) return res.status(400).json({ error: 'You must accept the NDA to register' });
     if (queryOne('SELECT id FROM users WHERE email = ?', [email])) {
@@ -671,9 +776,10 @@ function createApp() {
       return res.status(409).json({ error: 'Match already exists' });
     }
     const total = listing.quantity * listing.price;
+    const evidence = buildMatchEvidence(listing, buyerId, sellerId, listing.quantity, listing.price);
     run(
-      "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,currency,created_at) VALUES (?,?,?,?,'pending',?,?,?,?,?,?)",
-      [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, total*COMMISSION_RATE, listing.currency, new Date().toISOString()]
+      "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,currency,created_at,evidence) VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?)",
+      [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, total*COMMISSION_RATE, listing.currency, new Date().toISOString(), JSON.stringify(evidence)]
     );
     res.status(201).json({ success: true });
   });
@@ -847,6 +953,41 @@ function createApp() {
     res.json({
       match: { id: m.id, status: m.status, commissionPaid: !!m.commission_paid, buyerId: m.buyer_id, sellerId: m.seller_id },
       buyer, seller, messages
+    });
+  });
+
+  // GET /api/admin/matches/:id/evidence — full chargeback-protection bundle.
+  // Combines the at-creation snapshot (listing + both parties frozen at
+  // match time) with the complete chat transcript, payment metadata, and
+  // current-state info. Suitable for exporting to a payment processor
+  // during a chargeback dispute.
+  app.get('/api/admin/matches/:id/evidence', auth, adminOnly, (req, res) => {
+    const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+    if (!m) return res.status(404).json({ error: 'Match not found' });
+    let snapshot = null;
+    try { if (m.evidence) snapshot = JSON.parse(m.evidence); } catch {}
+    const messages = queryAll('SELECT * FROM messages WHERE match_id = ? ORDER BY created_at ASC', [m.id]).map(toMessage);
+    const currentBuyer = queryOne('SELECT company_name, contact_name, email, company_country FROM users WHERE id = ?', [m.buyer_id]);
+    const currentSeller = queryOne('SELECT company_name, contact_name, email, company_country FROM users WHERE id = ?', [m.seller_id]);
+    res.json({
+      evidenceExport: {
+        exportedAt: new Date().toISOString(),
+        matchId: m.id,
+        transactionState: {
+          status: m.status,
+          commissionPaid: !!m.commission_paid,
+          quantity: m.quantity,
+          pricePerUnit: m.price_per_unit,
+          totalValue: m.total_value,
+          commission: m.commission,
+          currency: m.currency,
+          stripeSessionId: m.stripe_session_id || null,
+          createdAt: m.created_at
+        },
+        atMatchTime: snapshot,     // frozen buyer/seller/listing at creation
+        currentParties: { buyer: currentBuyer, seller: currentSeller },
+        chatTranscript: messages   // full message history, blocked entries included
+      }
     });
   });
 
@@ -1172,6 +1313,130 @@ function createApp() {
 }
 
 // ============================================================
+// Daily JSON Backups
+// ============================================================
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_RETENTION_DAYS = parseInt(process.env.BACKUP_RETENTION_DAYS, 10) || 30;
+
+function performBackup() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const dateStr = new Date().toISOString().split('T')[0];
+    const filePath = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
+    const backup = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      tables: {
+        users:    queryAll('SELECT * FROM users'),
+        listings: queryAll('SELECT * FROM listings'),
+        matches:  queryAll('SELECT * FROM matches'),
+        messages: queryAll('SELECT * FROM messages')
+        // sessions are excluded (ephemeral auth state)
+      }
+    };
+    // Write atomically
+    const tmp = filePath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(backup, null, 2));
+    fs.renameSync(tmp, filePath);
+    const size = fs.statSync(filePath).size;
+    console.log(`[backup] Wrote ${filePath} (${(size / 1024).toFixed(1)} KB)`);
+
+    // Rotate: keep the most recent N files
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => /^backup-\d{4}-\d{2}-\d{2}\.json$/.test(f))
+      .sort()
+      .reverse();
+    for (let i = BACKUP_RETENTION_DAYS; i < files.length; i++) {
+      try { fs.unlinkSync(path.join(BACKUP_DIR, files[i])); console.log(`[backup] Removed ${files[i]}`); }
+      catch (err) { console.error(`[backup] Could not remove ${files[i]}:`, err.message); }
+    }
+  } catch (err) {
+    console.error('[backup] Failed:', err && err.stack ? err.stack : err);
+  }
+}
+
+function scheduleBackups() {
+  // If today's backup doesn't exist yet, run one 10s after startup
+  try {
+    const dateStr = new Date().toISOString().split('T')[0];
+    const todayFile = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
+    if (!fs.existsSync(todayFile)) setTimeout(performBackup, 10_000);
+  } catch {}
+  // Then check every hour whether we've already done today's backup
+  setInterval(() => {
+    const dateStr = new Date().toISOString().split('T')[0];
+    const todayFile = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
+    if (!fs.existsSync(todayFile)) performBackup();
+  }, 60 * 60 * 1000).unref();
+}
+
+// ============================================================
+// Uptime: startup/crash alerts via heartbeat file
+// ============================================================
+// A server cannot reliably detect its own downtime — for real uptime
+// alerts point an external monitor (UptimeRobot, BetterStack) at
+// https://your-domain/health. The heartbeat below catches UNCLEAN
+// shutdowns and emails the admin so crashes are at least visible.
+const HEARTBEAT_FILE = path.join(DATA_DIR, '.heartbeat');
+
+function detectAndNotifyUncleanRestart() {
+  try {
+    if (!fs.existsSync(HEARTBEAT_FILE)) return; // first run, nothing to report
+    const raw = fs.readFileSync(HEARTBEAT_FILE, 'utf8');
+    const lastBeat = new Date(raw.trim());
+    if (isNaN(lastBeat.getTime())) return;
+    const secondsSince = Math.round((Date.now() - lastBeat.getTime()) / 1000);
+
+    // Any existing heartbeat at startup means the previous process did not
+    // shut down cleanly (clean shutdowns delete it).
+    const minutes = Math.round(secondsSince / 60);
+    console.warn(`[uptime] Detected unclean shutdown — previous heartbeat was ${minutes} minute(s) ago`);
+    sendEmail({
+      to: process.env.ALERT_EMAIL || 'contact@oilbridge.eu',
+      subject: `OilBridge restarted unexpectedly`,
+      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+        <h2 style="color:#c0392b">OilBridge restarted unexpectedly</h2>
+        <p>The OilBridge server restarted on <strong>${new Date().toISOString()}</strong>. The previous process last wrote a heartbeat <strong>${minutes} minute(s) ago</strong>, which means it did not shut down cleanly (likely a crash or out-of-memory kill).</p>
+        <p>Check the Railway logs for the failure reason.</p>
+        <p style="font-size:0.8rem;color:#888;margin-top:32px">For true uptime monitoring, set up an external pinger (UptimeRobot, BetterStack) against <code>/health</code>.</p>
+      </div>`
+    }).catch(err => console.error('[uptime] Alert email failed:', err.message));
+  } catch (err) {
+    console.error('[uptime] heartbeat read failed:', err.message);
+  }
+}
+
+function startHeartbeat() {
+  const write = () => {
+    try { fs.writeFileSync(HEARTBEAT_FILE, new Date().toISOString()); } catch {}
+  };
+  write();
+  setInterval(write, 60_000).unref();
+  const cleanShutdown = () => {
+    try { fs.unlinkSync(HEARTBEAT_FILE); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGINT', cleanShutdown);
+  process.on('SIGTERM', cleanShutdown);
+}
+
+async function sendStartupNotification() {
+  try {
+    await sendEmail({
+      to: process.env.ALERT_EMAIL || 'contact@oilbridge.eu',
+      subject: 'OilBridge server started',
+      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+        <h2>OilBridge server started</h2>
+        <p>OilBridge started at <strong>${new Date().toISOString()}</strong> on port ${PORT}.</p>
+        <p style="font-size:0.85rem;color:#888">If you did not trigger this restart, check Railway for a crash or redeploy.</p>
+      </div>`
+    });
+  } catch (err) {
+    console.error('[uptime] Startup notification failed:', err.message);
+  }
+}
+
+// ============================================================
 // Startup (async for sql.js init)
 // ============================================================
 (async () => {
@@ -1189,6 +1454,16 @@ function createApp() {
   initDatabase();
   syncAdminPassword();
 
+  // Uptime hooks BEFORE the listener so we don't miss a crash
+  detectAndNotifyUncleanRestart();
+  startHeartbeat();
+
+  // Schedule daily backups
+  scheduleBackups();
+
   const app = createApp();
-  app.listen(PORT, '0.0.0.0', () => console.log(`OilBridge running on 0.0.0.0:${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`OilBridge running on 0.0.0.0:${PORT}`);
+    sendStartupNotification(); // non-blocking
+  });
 })();

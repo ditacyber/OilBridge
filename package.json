@@ -9,6 +9,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
     "express": "^4.21.0",
     "sql.js": "^1.11.0",
     "stripe": "^17.5.0"

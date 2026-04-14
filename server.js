@@ -1,6 +1,7 @@
 const express = require('express');
 const initSqlJs = require('sql.js');
 const Stripe = require('stripe');
+const Anthropic = require('@anthropic-ai/sdk');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -19,6 +20,17 @@ const stripe = process.env.STRIPE_SECRET_KEY
 
 if (stripe) console.log('Stripe payment integration enabled.');
 else console.log('Stripe not configured — set STRIPE_SECRET_KEY to enable payments.');
+
+const anthropic = process.env.ANTHROPIC_API_KEY
+  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  : null;
+const KYC_MODEL = process.env.KYC_MODEL || 'claude-sonnet-4-6';
+
+if (anthropic) console.log(`AI KYC verification enabled (${KYC_MODEL}).`);
+else console.log('AI KYC verification not configured — set ANTHROPIC_API_KEY to enable.');
+
+if (process.env.RESEND_API_KEY) console.log('Email notifications enabled (Resend).');
+else console.log('Email notifications not configured — set RESEND_API_KEY to enable real emails.');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -78,6 +90,8 @@ function generateId(prefix) {
 // ============================================================
 function toUser(row) {
   if (!row) return null;
+  let aiVerification = null;
+  try { if (row.ai_verification) aiVerification = JSON.parse(row.ai_verification); } catch {}
   return {
     id: row.id, email: row.email, role: row.role,
     companyName: row.company_name, companyReg: row.company_reg,
@@ -86,6 +100,8 @@ function toUser(row) {
     contactPosition: row.contact_position, kycStatus: row.kyc_status,
     ndaAccepted: !!row.nda_accepted,
     documents: JSON.parse(row.documents || '[]'),
+    aiVerification,
+    aiVerifiedAt: row.ai_verified_at || null,
     createdAt: row.created_at
   };
 }
@@ -116,6 +132,193 @@ function enrichListing(row) {
   const seller = queryOne('SELECT id, company_name, company_country FROM users WHERE id = ?', [row.user_id]);
   l.seller = seller ? { id: seller.id, companyName: seller.company_name, companyCountry: seller.company_country } : null;
   return l;
+}
+
+// ============================================================
+// Email service (Resend with stub fallback)
+// ============================================================
+async function sendEmail({ to, subject, html }) {
+  if (!process.env.RESEND_API_KEY) {
+    console.log(`[email stub] To: ${to} | Subject: ${subject}`);
+    return { mocked: true };
+  }
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: process.env.EMAIL_FROM || 'OilBridge <noreply@oilbridge.eu>',
+        to: [to], subject, html
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) console.error('Email send failed:', data);
+    return data;
+  } catch (err) {
+    console.error('Email service error:', err.message);
+    return { error: err.message };
+  }
+}
+
+async function sendKycResultEmail(user, status, reason) {
+  const isApproved = status === 'verified';
+  const isRejected = status === 'rejected';
+  let subject, html;
+
+  if (isApproved) {
+    subject = 'Your OilBridge account has been approved';
+    html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+      <h2 style="color:#c8860a">Welcome to OilBridge!</h2>
+      <p>Hi ${user.contact_name},</p>
+      <p>Great news — your KYC verification has been <strong>approved</strong>. You now have full access to the OilBridge marketplace and can start placing buy and sell listings immediately.</p>
+      <p style="background:#f5f5f4;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555">${reason}</p>
+      <p style="margin-top:24px"><a href="https://www.oilbridge.eu" style="background:#c8860a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Sign In to OilBridge</a></p>
+      <p style="font-size:0.85rem;color:#888;margin-top:32px">— The OilBridge team</p>
+    </div>`;
+  } else if (isRejected) {
+    subject = 'OilBridge — KYC verification update required';
+    html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+      <h2 style="color:#c0392b">KYC Verification Could Not Be Completed</h2>
+      <p>Hi ${user.contact_name},</p>
+      <p>We were unable to verify your account based on the documents you provided.</p>
+      <p style="background:#fdf0ee;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555"><strong>Reason:</strong> ${reason}</p>
+      <p>Please re-submit valid documents (company registration, KvK extract, passport, or business license) or contact <a href="mailto:contact@oilbridge.eu">contact@oilbridge.eu</a> for assistance.</p>
+      <p style="font-size:0.85rem;color:#888;margin-top:32px">— The OilBridge team</p>
+    </div>`;
+  } else {
+    subject = 'OilBridge — Your account is under manual review';
+    html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+      <h2>Account Under Review</h2>
+      <p>Hi ${user.contact_name},</p>
+      <p>Your account requires manual review by our team. We'll get back to you within 1–3 business days.</p>
+      <p style="background:#f5f5f4;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555">${reason}</p>
+      <p style="font-size:0.85rem;color:#888;margin-top:32px">— The OilBridge team</p>
+    </div>`;
+  }
+
+  return sendEmail({ to: user.email, subject, html });
+}
+
+// ============================================================
+// AI KYC Verification (Claude API)
+// ============================================================
+function extractBase64(dataUrl) {
+  const match = (dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+  return match ? { mediaType: match[1], data: match[2] } : null;
+}
+
+function buildContentBlock(doc) {
+  const ext = extractBase64(doc.dataUrl);
+  if (!ext) return null;
+  if (doc.type === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: ext.data } };
+  }
+  if (['image/jpeg', 'image/jpg', 'image/png'].includes(doc.type)) {
+    const mt = doc.type === 'image/jpg' ? 'image/jpeg' : doc.type;
+    return { type: 'image', source: { type: 'base64', media_type: mt, data: ext.data } };
+  }
+  return null;
+}
+
+async function analyzeDocument(doc, companyName) {
+  const block = buildContentBlock(doc);
+  if (!block) return { valid: false, reason: 'Unsupported file format', confidence: 'high', document_type: 'unknown' };
+
+  const userPrompt = `Analyze this document. Is it a valid business identification document (company registration, KvK extract, passport, or business license)?
+
+The user has registered the company name "${companyName}". If this is a company document (not a personal ID), check whether the company name on the document matches.
+
+Reply with JSON only: {valid: true/false, document_type: string, confidence: high/medium/low, reason: string, company_name_match: true/false/"not_applicable"}`;
+
+  const message = await anthropic.messages.create({
+    model: KYC_MODEL,
+    max_tokens: 512,
+    system: [{
+      type: 'text',
+      text: 'You are a KYC compliance analyst for an EU oil trading platform. Examine documents for legitimacy and respond ONLY with the requested JSON object. Be strict — reject blank pages, screenshots of generic web pages, irrelevant documents, or anything that looks tampered with.',
+      cache_control: { type: 'ephemeral' }
+    }],
+    messages: [{ role: 'user', content: [block, { type: 'text', text: userPrompt }] }]
+  });
+
+  const text = message.content
+    .filter(c => c.type === 'text')
+    .map(c => c.text)
+    .join('');
+
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return { valid: false, reason: 'AI returned unparseable response', confidence: 'low', document_type: 'unknown' };
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    return {
+      valid: !!parsed.valid,
+      document_type: String(parsed.document_type || 'unknown'),
+      confidence: ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low',
+      reason: String(parsed.reason || ''),
+      company_name_match: parsed.company_name_match
+    };
+  } catch (err) {
+    return { valid: false, reason: 'AI response parse error: ' + err.message, confidence: 'low', document_type: 'unknown' };
+  }
+}
+
+async function verifyKycAsync(userId) {
+  if (!anthropic) {
+    console.log(`[KYC] Skipping AI verification for ${userId} (ANTHROPIC_API_KEY not set)`);
+    return;
+  }
+  const user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
+  if (!user) return;
+  const documents = JSON.parse(user.documents || '[]');
+  if (!documents.length) return;
+
+  console.log(`[KYC] Starting AI verification for ${user.email} (${documents.length} document(s))`);
+  const results = [];
+  for (const doc of documents) {
+    if (typeof doc !== 'object' || !doc.dataUrl) continue;
+    try {
+      const r = await analyzeDocument(doc, user.company_name);
+      results.push({ name: doc.name, ...r });
+      console.log(`[KYC]   ${doc.name}: valid=${r.valid} type=${r.document_type} conf=${r.confidence}`);
+    } catch (err) {
+      console.error(`[KYC]   ${doc.name}: API error —`, err.message);
+      results.push({ name: doc.name, valid: false, confidence: 'low', document_type: 'unknown', reason: 'AI service error: ' + err.message });
+    }
+  }
+
+  // Decision logic:
+  // - APPROVE if at least one valid business doc with high confidence AND
+  //   (company name matches OR is not applicable for that document type)
+  // - REJECT if every document is invalid with high confidence
+  // - PENDING otherwise (manual review needed)
+  const validHighConf = results.find(r =>
+    r.valid && r.confidence === 'high' &&
+    (r.company_name_match === true || r.company_name_match === 'not_applicable')
+  );
+  const allInvalidHighConf = results.length > 0 && results.every(r => !r.valid && r.confidence === 'high');
+
+  let newStatus = 'pending';
+  let summary = '';
+  if (validHighConf) {
+    newStatus = 'verified';
+    summary = `AI verified document "${validHighConf.name}" as ${validHighConf.document_type} (high confidence). ${validHighConf.reason}`;
+  } else if (allInvalidHighConf) {
+    newStatus = 'rejected';
+    summary = `AI rejected all documents. ${results[0].reason}`;
+  } else {
+    summary = 'Documents need manual review (AI confidence too low or mixed results).';
+  }
+
+  const verification = { status: newStatus, summary, results, model: KYC_MODEL, timestamp: new Date().toISOString() };
+  run('UPDATE users SET kyc_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
+      [newStatus, JSON.stringify(verification), new Date().toISOString(), userId]);
+
+  console.log(`[KYC] Decision for ${user.email}: ${newStatus} — ${summary}`);
+  await sendKycResultEmail(user, newStatus, summary);
 }
 
 function checkForMatches(newListing) {
@@ -176,6 +379,10 @@ function initDatabase() {
   // Migrate: add Stripe payment columns to matches
   try { db.run('ALTER TABLE matches ADD COLUMN commission_paid INTEGER NOT NULL DEFAULT 0'); } catch(e) {}
   try { db.run('ALTER TABLE matches ADD COLUMN stripe_session_id TEXT'); } catch(e) {}
+
+  // Migrate: add AI KYC verification columns to users
+  try { db.run('ALTER TABLE users ADD COLUMN ai_verification TEXT'); } catch(e) {}
+  try { db.run('ALTER TABLE users ADD COLUMN ai_verified_at TEXT'); } catch(e) {}
 
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
@@ -296,6 +503,22 @@ function createApp() {
       [id, email, hashPassword(password), companyName, companyReg, companyCountry, companyVat||'', contactName, contactPhone||'', contactPosition||'', ndaAccepted?1:0, JSON.stringify(documents||[]), new Date().toISOString()]
     );
     res.status(201).json({ success: true, user: toUser(queryOne('SELECT * FROM users WHERE id = ?', [id])) });
+
+    // Fire-and-forget AI verification (non-blocking)
+    setImmediate(() => {
+      verifyKycAsync(id).catch(err => console.error('[KYC] verifyKycAsync threw:', err));
+    });
+  });
+
+  // Admin-only: re-trigger AI verification for a user
+  app.post('/api/users/:id/verify-kyc', auth, adminOnly, async (req, res) => {
+    if (!anthropic) return res.status(503).json({ error: 'AI verification not configured (ANTHROPIC_API_KEY missing)' });
+    const user = queryOne('SELECT id FROM users WHERE id = ?', [req.params.id]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ success: true, message: 'Verification started' });
+    setImmediate(() => {
+      verifyKycAsync(req.params.id).catch(err => console.error('[KYC] re-verify threw:', err));
+    });
   });
 
   app.post('/api/auth/login', (req, res) => {

@@ -1058,14 +1058,46 @@
             </div>`;
           }).join('');
 
+          // AI verification panel
+          let aiPanel = '';
+          if (u.aiVerification) {
+            const v = u.aiVerification;
+            const decisionClass = { verified: 'success', rejected: 'error', pending: 'warning' }[v.status] || 'info';
+            const perDocResults = (v.results || []).map(r => `
+              <div style="padding:8px 12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:0.8rem;margin-top:6px">
+                <div style="display:flex;justify-content:space-between;gap:8px">
+                  <strong>${esc(r.name)}</strong>
+                  <span>${r.valid ? '&#10003;' : '&#10007;'} ${esc(r.document_type || 'unknown')} <span class="text-muted">(${esc(r.confidence)})</span></span>
+                </div>
+                <div class="text-muted" style="margin-top:4px">${esc(r.reason || '')}</div>
+                ${r.company_name_match !== undefined ? `<div class="text-muted" style="margin-top:2px">Company name match: ${esc(String(r.company_name_match))}</div>` : ''}
+              </div>
+            `).join('');
+            aiPanel = `
+              <div style="margin-top:20px;padding:16px;background:var(--bg-tertiary);border:1px solid var(--accent-border);border-radius:var(--radius-sm)">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                  <strong style="color:var(--accent)">AI Verification</strong>
+                  <span class="badge badge-${decisionClass}">${esc(v.status)}</span>
+                  <span class="text-muted" style="font-size:0.75rem;margin-left:auto">${esc(v.model || '')} &middot; ${formatDate(v.timestamp)}</span>
+                </div>
+                <div style="font-size:0.85rem;color:var(--text-secondary)">${esc(v.summary || '')}</div>
+                ${perDocResults}
+              </div>`;
+          } else if (u.role !== 'admin') {
+            aiPanel = `<div style="margin-top:16px;padding:12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:0.85rem;color:var(--text-muted);text-align:center">
+              No AI verification on file. ${u.documents && u.documents.length ? '<button class="btn btn-ghost btn-sm" id="modal-reverify-btn" data-id="' + esc(u.id) + '" style="margin-left:8px">Run AI Check</button>' : ''}
+            </div>`;
+          }
+
           const kycActions = u.role === 'admin' ? '' : `
-            <div style="display:flex;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+            <div style="display:flex;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);align-items:center">
               <button class="btn btn-success btn-sm" id="modal-approve-btn" data-id="${esc(u.id)}">Approve User</button>
               <button class="btn btn-danger btn-sm" id="modal-reject-btn" data-id="${esc(u.id)}">Reject User</button>
-              <span class="badge badge-${{verified:'success',pending:'warning',rejected:'error'}[u.kycStatus] || 'info'}" style="margin-left:auto;align-self:center">${esc(u.kycStatus)}</span>
+              ${u.aiVerification ? `<button class="btn btn-ghost btn-sm" id="modal-reverify-btn" data-id="${esc(u.id)}">Re-run AI</button>` : ''}
+              <span class="badge badge-${{verified:'success',pending:'warning',rejected:'error'}[u.kycStatus] || 'info'}" style="margin-left:auto">${esc(u.kycStatus)}</span>
             </div>`;
 
-          showModal('KYC Documents — ' + u.companyName,
+          showModal('KYC Review — ' + u.companyName,
             `<div style="margin-bottom:12px;font-size:0.85rem;color:var(--text-secondary)">
               <strong>${esc(u.contactName)}</strong> &middot; ${esc(u.email)} &middot; ${esc(u.companyCountry)}
             </div>
@@ -1073,13 +1105,15 @@
               ${docsHtml}
               ${(!u.documents || !u.documents.length) ? '<p class="text-muted">No documents uploaded.</p>' : ''}
             </div>
+            ${aiPanel}
             ${kycActions}`,
             `<button class="btn btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Close</button>`
           );
 
-          // Wire up modal-level approve/reject buttons
+          // Wire up modal-level approve/reject/reverify buttons
           const approveBtn = document.getElementById('modal-approve-btn');
           const rejectBtn = document.getElementById('modal-reject-btn');
+          const reverifyBtn = document.getElementById('modal-reverify-btn');
           if (approveBtn) approveBtn.addEventListener('click', async () => {
             await store.updateUser(approveBtn.dataset.id, { kycStatus: 'verified' });
             closeModal(); showToast('User approved.', 'success'); await renderTab();
@@ -1087,6 +1121,15 @@
           if (rejectBtn) rejectBtn.addEventListener('click', async () => {
             await store.updateUser(rejectBtn.dataset.id, { kycStatus: 'rejected' });
             closeModal(); showToast('User rejected.', 'info'); await renderTab();
+          });
+          if (reverifyBtn) reverifyBtn.addEventListener('click', async () => {
+            const r = await store.reverifyKyc(reverifyBtn.dataset.id);
+            if (r && r.success) {
+              showToast('AI verification re-started — refresh in a few seconds.', 'info');
+              closeModal();
+            } else {
+              showToast((r && r.error) || 'Failed to start verification', 'error');
+            }
           });
         }
       }

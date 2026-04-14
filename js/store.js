@@ -86,6 +86,7 @@ class Store {
   async getPendingUsers() { return (await this.api('GET', '/users?status=pending')) || []; }
   async getUser(id) { return await this.api('GET', '/users/' + id); }
   async updateUser(id, data) { return await this.api('PATCH', '/users/' + id, data); }
+  async reverifyKyc(id) { return await this.api('POST', '/users/' + id + '/verify-kyc'); }
 
   // --- Listings ---
   async getListings(filters) {

@@ -7,6 +7,16 @@ const path = require('path');
 const fs = require('fs');
 
 // ============================================================
+// Process-level safety net — keep the server alive on errors
+// ============================================================
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err && err.stack ? err.stack : err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL] unhandledRejection:', reason && reason.stack ? reason.stack : reason);
+});
+
+// ============================================================
 // Config
 // ============================================================
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -40,8 +50,15 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 let db;
 
 function saveDb() {
-  const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
+  try {
+    const data = db.export();
+    // Atomic write: write to temp file, then rename
+    const tmp = DB_PATH + '.tmp';
+    fs.writeFileSync(tmp, Buffer.from(data));
+    fs.renameSync(tmp, DB_PATH);
+  } catch (err) {
+    console.error('[DB] saveDb failed:', err.message);
+  }
 }
 
 function queryAll(sql, params = []) {
@@ -318,58 +335,76 @@ Reply with JSON only: {valid: true/false, document_type: string, confidence: hig
 }
 
 async function verifyKycAsync(userId) {
-  if (!anthropic) {
-    console.log(`[KYC] Skipping AI verification for ${userId} (ANTHROPIC_API_KEY not set)`);
-    return;
-  }
-  const user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
-  if (!user) return;
-  const documents = JSON.parse(user.documents || '[]');
-  if (!documents.length) return;
-
-  console.log(`[KYC] Starting AI verification for ${user.email} (${documents.length} document(s))`);
-  const results = [];
-  for (const doc of documents) {
-    if (typeof doc !== 'object' || !doc.dataUrl) continue;
-    try {
-      const r = await analyzeDocument(doc, user.company_name);
-      results.push({ name: doc.name, ...r });
-      console.log(`[KYC]   ${doc.name}: valid=${r.valid} type=${r.document_type} conf=${r.confidence}`);
-    } catch (err) {
-      console.error(`[KYC]   ${doc.name}: API error —`, err.message);
-      results.push({ name: doc.name, valid: false, confidence: 'low', document_type: 'unknown', reason: 'AI service error: ' + err.message });
+  try {
+    if (!anthropic) {
+      console.log(`[KYC] Skipping AI verification for ${userId} (ANTHROPIC_API_KEY not set)`);
+      return;
     }
+    let user;
+    try {
+      user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
+    } catch (err) {
+      console.error('[KYC] DB read failed:', err.message);
+      return;
+    }
+    if (!user) return;
+
+    let documents = [];
+    try { documents = JSON.parse(user.documents || '[]'); } catch {}
+    if (!documents.length) return;
+
+    console.log(`[KYC] Starting AI verification for ${user.email} (${documents.length} document(s))`);
+    const results = [];
+    for (const doc of documents) {
+      if (typeof doc !== 'object' || !doc.dataUrl) continue;
+      try {
+        const r = await analyzeDocument(doc, user.company_name);
+        results.push({ name: doc.name, ...r });
+        console.log(`[KYC]   ${doc.name}: valid=${r.valid} type=${r.document_type} conf=${r.confidence}`);
+      } catch (err) {
+        console.error(`[KYC]   ${doc.name}: API error —`, err.message);
+        results.push({ name: doc.name, valid: false, confidence: 'low', document_type: 'unknown', reason: 'AI service error: ' + err.message });
+      }
+    }
+
+    // Decision logic: approve if any valid high-confidence doc with matching company name;
+    // reject if every doc is invalid with high confidence; otherwise keep pending.
+    const validHighConf = results.find(r =>
+      r.valid && r.confidence === 'high' &&
+      (r.company_name_match === true || r.company_name_match === 'not_applicable')
+    );
+    const allInvalidHighConf = results.length > 0 && results.every(r => !r.valid && r.confidence === 'high');
+
+    let newStatus = 'pending';
+    let summary = '';
+    if (validHighConf) {
+      newStatus = 'verified';
+      summary = `AI verified document "${validHighConf.name}" as ${validHighConf.document_type} (high confidence). ${validHighConf.reason}`;
+    } else if (allInvalidHighConf) {
+      newStatus = 'rejected';
+      summary = `AI rejected all documents. ${results[0].reason}`;
+    } else {
+      summary = 'Documents need manual review (AI confidence too low or mixed results).';
+    }
+
+    const verification = { status: newStatus, summary, results, model: KYC_MODEL, timestamp: new Date().toISOString() };
+    try {
+      run('UPDATE users SET kyc_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
+          [newStatus, JSON.stringify(verification), new Date().toISOString(), userId]);
+    } catch (err) {
+      console.error('[KYC] DB write failed:', err.message);
+      return;
+    }
+
+    console.log(`[KYC] Decision for ${user.email}: ${newStatus} — ${summary}`);
+    try {
+      await sendKycResultEmail(user, newStatus, summary);
+    } catch (err) {
+      console.error('[KYC] Email notification failed:', err.message);
+    }
+  } catch (err) {
+    console.error('[KYC] verifyKycAsync unexpected error:', err && err.stack ? err.stack : err);
   }
-
-  // Decision logic:
-  // - APPROVE if at least one valid business doc with high confidence AND
-  //   (company name matches OR is not applicable for that document type)
-  // - REJECT if every document is invalid with high confidence
-  // - PENDING otherwise (manual review needed)
-  const validHighConf = results.find(r =>
-    r.valid && r.confidence === 'high' &&
-    (r.company_name_match === true || r.company_name_match === 'not_applicable')
-  );
-  const allInvalidHighConf = results.length > 0 && results.every(r => !r.valid && r.confidence === 'high');
-
-  let newStatus = 'pending';
-  let summary = '';
-  if (validHighConf) {
-    newStatus = 'verified';
-    summary = `AI verified document "${validHighConf.name}" as ${validHighConf.document_type} (high confidence). ${validHighConf.reason}`;
-  } else if (allInvalidHighConf) {
-    newStatus = 'rejected';
-    summary = `AI rejected all documents. ${results[0].reason}`;
-  } else {
-    summary = 'Documents need manual review (AI confidence too low or mixed results).';
-  }
-
-  const verification = { status: newStatus, summary, results, model: KYC_MODEL, timestamp: new Date().toISOString() };
-  run('UPDATE users SET kyc_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
-      [newStatus, JSON.stringify(verification), new Date().toISOString(), userId]);
-
-  console.log(`[KYC] Decision for ${user.email}: ${newStatus} — ${summary}`);
-  await sendKycResultEmail(user, newStatus, summary);
 }
 
 function checkForMatches(newListing) {
@@ -480,10 +515,14 @@ function createApp() {
       const session = event.data.object;
       const matchId = session.metadata && session.metadata.matchId;
       if (matchId) {
-        run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
-        console.log(`Commission paid for match ${matchId}`);
-        // Notify any open chat clients that the deal is sealed and chat is closed
-        sseBroadcast(matchId, 'deal_confirmed', { matchId, at: new Date().toISOString() });
+        try {
+          run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
+          console.log(`Commission paid for match ${matchId}`);
+          sseBroadcast(matchId, 'deal_confirmed', { matchId, at: new Date().toISOString() });
+        } catch (err) {
+          console.error('Failed to process checkout.session.completed for', matchId, err.message);
+          // Still return 200 so Stripe doesn't retry indefinitely
+        }
       }
     }
     res.json({ received: true });
@@ -491,6 +530,9 @@ function createApp() {
 
   // 50MB limit to accommodate base64-encoded KYC documents (max 5 files x 5MB each)
   app.use(express.json({ limit: '50mb' }));
+
+  // Async route wrapper — forwards rejected promises to the error middleware
+  const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
   // --- Auth middleware ---
   function auth(req, res, next) {
@@ -574,7 +616,7 @@ function createApp() {
   });
 
   // Admin-only: re-trigger AI verification for a user
-  app.post('/api/users/:id/verify-kyc', auth, adminOnly, async (req, res) => {
+  app.post('/api/users/:id/verify-kyc', auth, adminOnly, ah(async (req, res) => {
     if (!anthropic) return res.status(503).json({ error: 'AI verification not configured (ANTHROPIC_API_KEY missing)' });
     const user = queryOne('SELECT id FROM users WHERE id = ?', [req.params.id]);
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -582,7 +624,7 @@ function createApp() {
     setImmediate(() => {
       verifyKycAsync(req.params.id).catch(err => console.error('[KYC] re-verify threw:', err));
     });
-  });
+  }));
 
   app.post('/api/auth/login', (req, res) => {
     const { email, password } = req.body;
@@ -762,7 +804,7 @@ function createApp() {
   });
 
   // POST /api/matches/:id/messages — send a message
-  app.post('/api/matches/:id/messages', auth, async (req, res) => {
+  app.post('/api/matches/:id/messages', auth, ah(async (req, res) => {
     const r = getMatchAsParticipant(req.params.id, req.user.id);
     if (r.error) return res.status(r.code).json({ error: r.error });
     if (r.match.status !== 'accepted') return res.status(400).json({ error: 'Chat is only available on accepted matches' });
@@ -813,39 +855,47 @@ function createApp() {
         </div>`
       }).catch(err => console.error('Chat notification email failed:', err.message));
     }
-  });
+  }));
 
   // GET /api/matches/:id/stream — SSE for live updates (token via query param since EventSource lacks headers)
   app.get('/api/matches/:id/stream', (req, res) => {
-    const token = req.query.token;
-    const session = token ? queryOne('SELECT user_id FROM sessions WHERE token = ?', [token]) : null;
-    if (!session) return res.status(401).end();
-    const user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
-    if (!user) return res.status(401).end();
+    try {
+      const token = req.query.token;
+      const session = token ? queryOne('SELECT user_id FROM sessions WHERE token = ?', [token]) : null;
+      if (!session) return res.status(401).end();
+      const user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
+      if (!user) return res.status(401).end();
 
-    const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
-    if (!m) return res.status(404).end();
-    if (m.buyer_id !== user.id && m.seller_id !== user.id && user.role !== 'admin') return res.status(403).end();
+      const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+      if (!m) return res.status(404).end();
+      if (m.buyer_id !== user.id && m.seller_id !== user.id && user.role !== 'admin') return res.status(403).end();
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no'
-    });
-    res.write(`: connected\n\n`);
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      res.write(`: connected\n\n`);
 
-    const client = { res, userId: user.id };
-    sseAdd(req.params.id, client);
+      const client = { res, userId: user.id };
+      sseAdd(req.params.id, client);
 
-    const ka = setInterval(() => {
-      try { res.write(`: ka\n\n`); } catch {}
-    }, 25000);
+      const ka = setInterval(() => {
+        try { res.write(`: ka\n\n`); } catch {}
+      }, 25000);
 
-    req.on('close', () => {
-      clearInterval(ka);
-      sseRemove(req.params.id, client);
-    });
+      req.on('close', () => {
+        clearInterval(ka);
+        sseRemove(req.params.id, client);
+      });
+    } catch (err) {
+      console.error('[SSE] stream error:', err.message);
+      try {
+        if (!res.headersSent) res.status(500).end();
+        else res.end();
+      } catch {}
+    }
   });
 
   // GET /api/admin/chats — overview of all chat threads
@@ -889,7 +939,7 @@ function createApp() {
   });
 
   // ========== Stripe Payment Routes ==========
-  app.post('/api/payments/create-session', auth, async (req, res) => {
+  app.post('/api/payments/create-session', auth, ah(async (req, res) => {
     if (!stripe) return res.status(503).json({ error: 'Stripe is not configured. Set the STRIPE_SECRET_KEY environment variable.' });
     const { matchId } = req.body;
     if (!matchId) return res.status(400).json({ error: 'matchId is required' });
@@ -927,9 +977,9 @@ function createApp() {
       console.error('Stripe session creation failed:', err.message);
       res.status(500).json({ error: 'Failed to create payment session' });
     }
-  });
+  }));
 
-  app.get('/api/payments/verify-session', auth, async (req, res) => {
+  app.get('/api/payments/verify-session', auth, ah(async (req, res) => {
     if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
     const { session_id } = req.query;
     if (!session_id) return res.status(400).json({ error: 'session_id required' });
@@ -945,7 +995,7 @@ function createApp() {
     } catch (err) {
       res.status(400).json({ error: 'Invalid session' });
     }
-  });
+  }));
 
   // ========== Stats ==========
   app.get('/api/stats', auth, adminOnly, (req, res) => {
@@ -960,9 +1010,24 @@ function createApp() {
     });
   });
 
-  // ========== Health Check ==========
+  // ========== Health Check (for Railway / uptime monitoring) ==========
   app.get(['/health', '/api/health'], (req, res) => {
-    res.json({ status: 'ok', port: PORT, timestamp: new Date().toISOString() });
+    let dbOk = true, dbError = null;
+    try { queryOne('SELECT 1 as ok'); } catch (e) { dbOk = false; dbError = e.message; }
+    const payload = {
+      status: dbOk ? 'ok' : 'degraded',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.round(process.uptime()),
+      port: String(PORT),
+      checks: {
+        database: dbOk ? 'ok' : 'error',
+        stripe: stripe ? 'configured' : 'disabled',
+        anthropic: anthropic ? 'configured' : 'disabled',
+        email: process.env.RESEND_API_KEY ? 'configured' : 'disabled'
+      }
+    };
+    if (dbError) payload.errors = { database: dbError };
+    res.status(dbOk ? 200 : 503).json(payload);
   });
 
   // ========== SEO: sitemap.xml & robots.txt (served inline for reliability) ==========
@@ -1001,6 +1066,21 @@ function createApp() {
   app.use('/js', express.static(path.join(__dirname, 'js')));
   app.use('/assets', express.static(path.join(__dirname, 'assets')));
   app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+
+  // ========== Global error handler — last-resort for any route that throws ==========
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    console.error('[Express error]', req.method, req.path, '—', err && err.stack ? err.stack : err);
+    if (res.headersSent) {
+      try { res.end(); } catch {}
+      return;
+    }
+    if (req.path && req.path.startsWith('/api/')) {
+      res.status(500).json({ error: 'Internal server error' });
+    } else {
+      res.status(500).sendFile(path.join(__dirname, 'index.html'));
+    }
+  });
 
   return app;
 }

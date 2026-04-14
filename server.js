@@ -219,7 +219,8 @@ function createApp() {
     res.json({ received: true });
   });
 
-  app.use(express.json());
+  // 50MB limit to accommodate base64-encoded KYC documents (max 5 files x 5MB each)
+  app.use(express.json({ limit: '50mb' }));
 
   // --- Auth middleware ---
   function auth(req, res, next) {
@@ -252,12 +253,39 @@ function createApp() {
     next();
   }
 
+  // KYC document validation constants
+  const VALID_DOC_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+  const MIN_DOC_SIZE = 10 * 1024;          // 10 KB
+  const MAX_DOC_SIZE = 5 * 1024 * 1024;    // 5 MB
+  const MAX_DOCS = 5;
+
+  function validateDocuments(documents) {
+    if (!Array.isArray(documents) || documents.length === 0) {
+      return 'At least one KYC document is required';
+    }
+    if (documents.length > MAX_DOCS) {
+      return `Maximum ${MAX_DOCS} documents allowed`;
+    }
+    for (const d of documents) {
+      if (!d || typeof d !== 'object') return 'Invalid document format';
+      if (!d.name || !d.dataUrl) return 'Each document must have a name and content';
+      if (!VALID_DOC_TYPES.includes(d.type)) return `${d.name}: invalid file type. Only PDF, JPG, PNG accepted.`;
+      if (typeof d.size !== 'number' || d.size < MIN_DOC_SIZE) return `${d.name}: file too small (minimum 10 KB)`;
+      if (d.size > MAX_DOC_SIZE) return `${d.name}: file too large (maximum 5 MB)`;
+      if (typeof d.dataUrl !== 'string' || !d.dataUrl.startsWith('data:')) return `${d.name}: invalid file content`;
+    }
+    return null;
+  }
+
   // ========== Auth Routes ==========
   app.post('/api/auth/register', (req, res) => {
     const { email, password, companyName, companyReg, companyCountry, companyVat, contactName, contactPhone, contactPosition, ndaAccepted, documents } = req.body;
     if (!email || !password || !companyName || !companyReg || !companyCountry || !contactName) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
+    const docError = validateDocuments(documents);
+    if (docError) return res.status(400).json({ error: docError });
+    if (!ndaAccepted) return res.status(400).json({ error: 'You must accept the NDA to register' });
     if (queryOne('SELECT id FROM users WHERE email = ?', [email])) {
       return res.status(409).json({ error: 'Email already registered.' });
     }
@@ -292,12 +320,23 @@ function createApp() {
   });
 
   // ========== User Routes ==========
+  // Strip large dataUrl content from documents in list responses (kept only on GET /:id)
+  function stripDocContent(user) {
+    if (!user || !Array.isArray(user.documents)) return user;
+    user.documents = user.documents.map(d =>
+      typeof d === 'object' && d !== null
+        ? { name: d.name, type: d.type, size: d.size }
+        : d
+    );
+    return user;
+  }
+
   app.get('/api/users', auth, adminOnly, (req, res) => {
     const status = req.query.status;
     const rows = status
       ? queryAll("SELECT * FROM users WHERE role != 'admin' AND kyc_status = ? ORDER BY created_at DESC", [status])
       : queryAll("SELECT * FROM users WHERE role != 'admin' ORDER BY created_at DESC");
-    res.json(rows.map(toUser));
+    res.json(rows.map(r => stripDocContent(toUser(r))));
   });
 
   app.get('/api/users/:id', auth, (req, res) => {

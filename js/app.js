@@ -409,6 +409,7 @@
   // PAGE: Login
   // ============================================================
   function renderLogin(main) {
+    if (store.isLoggedIn()) { navigate('home'); return; }
     setPageMeta('Login', 'Sign in to your OilBridge account to access the EU oil marketplace, manage listings, and view trade matches.');
     main.innerHTML = `
       <div class="auth-page">
@@ -458,6 +459,7 @@
   // PAGE: Register (Multi-step)
   // ============================================================
   function renderRegister(main) {
+    if (store.isLoggedIn()) { navigate('home'); return; }
     setPageMeta('Register — Join the EU Oil Marketplace', 'Create your OilBridge account to start trading oil across Europe. KYC verification, NDA protection, and 3.2% transparent commission on completed trades.');
     const steps = ['register_step_company','register_step_contact','register_step_kyc','register_step_nda','register_step_password'];
     let currentStep = 0;
@@ -490,7 +492,11 @@
          </div>`,
 
         `<h3 class="mb-16" data-i18n="register_kyc_title">${esc(i18n.t('register_kyc_title'))}</h3>
-         <p class="text-muted mb-24" style="font-size:0.9rem" data-i18n="register_kyc_desc">${esc(i18n.t('register_kyc_desc'))}</p>
+         <p class="text-muted mb-16" style="font-size:0.9rem" data-i18n="register_kyc_desc">${esc(i18n.t('register_kyc_desc'))}</p>
+         <div class="commission-banner" style="margin-bottom:24px">
+           <div class="commission-banner-icon">&#128196;</div>
+           <div class="commission-banner-text">Please upload a valid KYC document (ID card, passport or company registration). All accounts are <strong>manually reviewed by an administrator</strong> before being granted access to listings.</div>
+         </div>
          <ul style="margin-bottom:24px;padding-left:20px;font-size:0.9rem;color:var(--text-secondary);line-height:2">
            <li data-i18n="register_kyc_company_reg">${esc(i18n.t('register_kyc_company_reg'))}</li>
            <li data-i18n="register_kyc_id">${esc(i18n.t('register_kyc_id'))}</li>
@@ -499,10 +505,14 @@
          <div class="upload-zone" id="upload-zone">
            <div class="upload-zone-icon">${svgIcon('upload')}</div>
            <div class="upload-zone-text" data-i18n="register_kyc_upload_hint">${esc(i18n.t('register_kyc_upload_hint'))}</div>
-           <div class="upload-zone-hint">PDF, JPG, PNG (max 10MB)</div>
-           <input type="file" id="file-input" multiple accept=".pdf,.jpg,.jpeg,.png" style="display:none">
+           <div class="upload-zone-hint">PDF, JPG, PNG &middot; min 10 KB &middot; max 5 MB &middot; up to 5 files</div>
+           <input type="file" id="file-input" multiple accept="application/pdf,image/jpeg,image/png" style="display:none">
          </div>
-         <div class="upload-file-list" id="upload-file-list">${formData.documents.map(d => `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(d)}</span><button class="file-remove" data-file="${esc(d)}">&times;</button></div>`).join('')}</div>`,
+         <div class="upload-file-list" id="upload-file-list">${formData.documents.map(d => {
+           const name = typeof d === 'object' ? d.name : d;
+           const sizeKb = typeof d === 'object' && d.size ? (d.size / 1024).toFixed(1) + ' KB' : '';
+           return `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(name)}</span>${sizeKb ? `<span class="text-muted" style="font-size:0.75rem">${sizeKb}</span>` : ''}<button class="file-remove" data-file="${esc(name)}">&times;</button></div>`;
+         }).join('')}</div>`,
 
         `<h3 class="mb-16" data-i18n="register_nda_title">${esc(i18n.t('register_nda_title'))}</h3>
          <p class="text-muted mb-24" style="font-size:0.9rem" data-i18n="register_nda_desc">${esc(i18n.t('register_nda_desc'))}</p>
@@ -550,7 +560,8 @@
         input.addEventListener('change', (e) => handleFiles(e.target.files));
         document.querySelectorAll('.file-remove').forEach(btn => {
           btn.addEventListener('click', (e) => {
-            formData.documents = formData.documents.filter(d => d !== e.target.dataset.file);
+            const fname = e.target.dataset.file;
+            formData.documents = formData.documents.filter(d => (typeof d === 'object' ? d.name : d) !== fname);
             renderForm();
           });
         });
@@ -558,8 +569,43 @@
       i18n.translatePage();
     }
 
-    function handleFiles(files) {
-      Array.from(files).forEach(f => { if (!formData.documents.includes(f.name)) formData.documents.push(f.name); });
+    async function handleFiles(files) {
+      const VALID_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+      const MIN_SIZE = 10 * 1024;            // 10 KB
+      const MAX_SIZE = 5 * 1024 * 1024;      // 5 MB
+      const MAX_DOCS = 5;
+
+      for (const file of Array.from(files)) {
+        if (formData.documents.length >= MAX_DOCS) {
+          showToast(`Maximum ${MAX_DOCS} documents allowed.`, 'error');
+          break;
+        }
+        if (!VALID_TYPES.includes(file.type)) {
+          showToast(`${file.name}: invalid file type. Only PDF, JPG, PNG accepted.`, 'error');
+          continue;
+        }
+        if (file.size < MIN_SIZE) {
+          showToast(`${file.name}: file too small (minimum 10 KB).`, 'error');
+          continue;
+        }
+        if (file.size > MAX_SIZE) {
+          showToast(`${file.name}: file too large (maximum 5 MB).`, 'error');
+          continue;
+        }
+        if (formData.documents.find(d => (d.name || d) === file.name)) continue;
+
+        try {
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+          formData.documents.push({ name: file.name, type: file.type, size: file.size, dataUrl });
+        } catch {
+          showToast(`Failed to read ${file.name}.`, 'error');
+        }
+      }
       renderForm();
     }
 
@@ -946,13 +992,16 @@
         }
       } else if (activeTab === 'users') {
         const users = await store.getUsers();
-        content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>${esc(i18n.t('admin_user_company'))}</th><th>${esc(i18n.t('admin_user_email'))}</th><th>Country</th><th>${esc(i18n.t('admin_user_status'))}</th><th>${esc(i18n.t('admin_user_date'))}</th></tr></thead><tbody>
+        content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>${esc(i18n.t('admin_user_company'))}</th><th>${esc(i18n.t('admin_user_email'))}</th><th>Country</th><th>Docs</th><th>${esc(i18n.t('admin_user_status'))}</th><th>${esc(i18n.t('admin_user_date'))}</th><th>Actions</th></tr></thead><tbody>
           ${users.map(u => {
             const statusBadge = { verified: 'success', pending: 'warning', rejected: 'error' }[u.kycStatus] || 'info';
+            const docCount = (u.documents || []).length;
             return `<tr><td><strong>${esc(u.companyName)}</strong><br><span class="text-muted" style="font-size:0.8rem">${esc(u.contactName)}</span></td>
               <td>${esc(u.email)}</td><td>${esc(u.companyCountry)}</td>
+              <td>${docCount}</td>
               <td><span class="badge badge-${statusBadge}">${esc(u.kycStatus)}</span></td>
-              <td>${formatDate(u.createdAt)}</td></tr>`;
+              <td>${formatDate(u.createdAt)}</td>
+              <td><button class="btn btn-ghost btn-sm admin-docs-btn" data-id="${esc(u.id)}">Review</button></td></tr>`;
           }).join('')}
         </tbody></table></div>`;
       } else if (activeTab === 'listings') {
@@ -992,13 +1041,53 @@
       if (docsBtn) {
         const u = await store.getUser(docsBtn.dataset.id);
         if (u && !u.error) {
+          const docsHtml = (u.documents || []).map(d => {
+            const name = typeof d === 'object' ? d.name : d;
+            const type = typeof d === 'object' ? d.type : '';
+            const size = typeof d === 'object' && d.size ? (d.size / 1024).toFixed(1) + ' KB' : '';
+            const dataUrl = typeof d === 'object' ? d.dataUrl : null;
+            return `<div class="upload-file-item" style="padding:12px 14px">
+              ${svgIcon('file')}
+              <div style="flex:1;min-width:0">
+                <div class="file-name">${esc(name)}</div>
+                <div class="text-muted" style="font-size:0.75rem;margin-top:2px">${esc(type)} ${size ? '&middot; ' + size : ''}</div>
+              </div>
+              ${dataUrl
+                ? `<a href="${dataUrl}" target="_blank" rel="noopener" download="${esc(name)}" class="btn btn-secondary btn-sm">View</a>`
+                : '<span class="badge badge-warning">Legacy</span>'}
+            </div>`;
+          }).join('');
+
+          const kycActions = u.role === 'admin' ? '' : `
+            <div style="display:flex;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+              <button class="btn btn-success btn-sm" id="modal-approve-btn" data-id="${esc(u.id)}">Approve User</button>
+              <button class="btn btn-danger btn-sm" id="modal-reject-btn" data-id="${esc(u.id)}">Reject User</button>
+              <span class="badge badge-${{verified:'success',pending:'warning',rejected:'error'}[u.kycStatus] || 'info'}" style="margin-left:auto;align-self:center">${esc(u.kycStatus)}</span>
+            </div>`;
+
           showModal('KYC Documents — ' + u.companyName,
-            `<div style="display:flex;flex-direction:column;gap:12px">
-              ${(u.documents || []).map(d => `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(d)}</span></div>`).join('')}
+            `<div style="margin-bottom:12px;font-size:0.85rem;color:var(--text-secondary)">
+              <strong>${esc(u.contactName)}</strong> &middot; ${esc(u.email)} &middot; ${esc(u.companyCountry)}
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${docsHtml}
               ${(!u.documents || !u.documents.length) ? '<p class="text-muted">No documents uploaded.</p>' : ''}
-            </div>`,
+            </div>
+            ${kycActions}`,
             `<button class="btn btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Close</button>`
           );
+
+          // Wire up modal-level approve/reject buttons
+          const approveBtn = document.getElementById('modal-approve-btn');
+          const rejectBtn = document.getElementById('modal-reject-btn');
+          if (approveBtn) approveBtn.addEventListener('click', async () => {
+            await store.updateUser(approveBtn.dataset.id, { kycStatus: 'verified' });
+            closeModal(); showToast('User approved.', 'success'); await renderTab();
+          });
+          if (rejectBtn) rejectBtn.addEventListener('click', async () => {
+            await store.updateUser(rejectBtn.dataset.id, { kycStatus: 'rejected' });
+            closeModal(); showToast('User rejected.', 'info'); await renderTab();
+          });
         }
       }
     });

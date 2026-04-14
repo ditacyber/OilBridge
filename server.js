@@ -1,7 +1,6 @@
 const express = require('express');
 const initSqlJs = require('sql.js');
 const Stripe = require('stripe');
-const Anthropic = require('@anthropic-ai/sdk');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
@@ -28,16 +27,8 @@ const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY)
   : null;
 
-if (stripe) console.log('Stripe payment integration enabled.');
-else console.log('Stripe not configured — set STRIPE_SECRET_KEY to enable payments.');
-
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  : null;
-const KYC_MODEL = process.env.KYC_MODEL || 'claude-sonnet-4-6';
-
-if (anthropic) console.log(`AI KYC verification enabled (${KYC_MODEL}).`);
-else console.log('AI KYC verification not configured — set ANTHROPIC_API_KEY to enable.');
+if (stripe) console.log('Stripe integration enabled (payments + identity).');
+else console.log('Stripe not configured — set STRIPE_SECRET_KEY to enable payments and KYC.');
 
 if (process.env.RESEND_API_KEY) console.log('Email notifications enabled (Resend).');
 else console.log('Email notifications not configured — set RESEND_API_KEY to enable real emails.');
@@ -107,8 +98,8 @@ function generateId(prefix) {
 // ============================================================
 function toUser(row) {
   if (!row) return null;
-  let aiVerification = null;
-  try { if (row.ai_verification) aiVerification = JSON.parse(row.ai_verification); } catch {}
+  let kycDetails = null;
+  try { if (row.ai_verification) kycDetails = JSON.parse(row.ai_verification); } catch {}
   return {
     id: row.id, email: row.email, role: row.role,
     companyName: row.company_name, companyReg: row.company_reg,
@@ -117,8 +108,10 @@ function toUser(row) {
     contactPosition: row.contact_position, kycStatus: row.kyc_status,
     ndaAccepted: !!row.nda_accepted,
     documents: JSON.parse(row.documents || '[]'),
-    aiVerification,
-    aiVerifiedAt: row.ai_verified_at || null,
+    stripeIdentitySessionId: row.stripe_identity_session_id || null,
+    stripeIdentityStatus: row.stripe_identity_status || null,
+    kycDetails,
+    kycVerifiedAt: row.ai_verified_at || null,
     createdAt: row.created_at
   };
 }
@@ -270,142 +263,6 @@ function toMessage(row) {
   };
 }
 
-// ============================================================
-// AI KYC Verification (Claude API)
-// ============================================================
-function extractBase64(dataUrl) {
-  const match = (dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
-  return match ? { mediaType: match[1], data: match[2] } : null;
-}
-
-function buildContentBlock(doc) {
-  const ext = extractBase64(doc.dataUrl);
-  if (!ext) return null;
-  if (doc.type === 'application/pdf') {
-    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: ext.data } };
-  }
-  if (['image/jpeg', 'image/jpg', 'image/png'].includes(doc.type)) {
-    const mt = doc.type === 'image/jpg' ? 'image/jpeg' : doc.type;
-    return { type: 'image', source: { type: 'base64', media_type: mt, data: ext.data } };
-  }
-  return null;
-}
-
-async function analyzeDocument(doc, companyName) {
-  const block = buildContentBlock(doc);
-  if (!block) return { valid: false, reason: 'Unsupported file format', confidence: 'high', document_type: 'unknown' };
-
-  const userPrompt = `Analyze this document. Is it a valid business identification document (company registration, KvK extract, passport, or business license)?
-
-The user has registered the company name "${companyName}". If this is a company document (not a personal ID), check whether the company name on the document matches.
-
-Reply with JSON only: {valid: true/false, document_type: string, confidence: high/medium/low, reason: string, company_name_match: true/false/"not_applicable"}`;
-
-  const message = await anthropic.messages.create({
-    model: KYC_MODEL,
-    max_tokens: 512,
-    system: [{
-      type: 'text',
-      text: 'You are a KYC compliance analyst for an EU oil trading platform. Examine documents for legitimacy and respond ONLY with the requested JSON object. Be strict — reject blank pages, screenshots of generic web pages, irrelevant documents, or anything that looks tampered with.',
-      cache_control: { type: 'ephemeral' }
-    }],
-    messages: [{ role: 'user', content: [block, { type: 'text', text: userPrompt }] }]
-  });
-
-  const text = message.content
-    .filter(c => c.type === 'text')
-    .map(c => c.text)
-    .join('');
-
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return { valid: false, reason: 'AI returned unparseable response', confidence: 'low', document_type: 'unknown' };
-
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      valid: !!parsed.valid,
-      document_type: String(parsed.document_type || 'unknown'),
-      confidence: ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'low',
-      reason: String(parsed.reason || ''),
-      company_name_match: parsed.company_name_match
-    };
-  } catch (err) {
-    return { valid: false, reason: 'AI response parse error: ' + err.message, confidence: 'low', document_type: 'unknown' };
-  }
-}
-
-async function verifyKycAsync(userId) {
-  try {
-    if (!anthropic) {
-      console.log(`[KYC] Skipping AI verification for ${userId} (ANTHROPIC_API_KEY not set)`);
-      return;
-    }
-    let user;
-    try {
-      user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
-    } catch (err) {
-      console.error('[KYC] DB read failed:', err.message);
-      return;
-    }
-    if (!user) return;
-
-    let documents = [];
-    try { documents = JSON.parse(user.documents || '[]'); } catch {}
-    if (!documents.length) return;
-
-    console.log(`[KYC] Starting AI verification for ${user.email} (${documents.length} document(s))`);
-    const results = [];
-    for (const doc of documents) {
-      if (typeof doc !== 'object' || !doc.dataUrl) continue;
-      try {
-        const r = await analyzeDocument(doc, user.company_name);
-        results.push({ name: doc.name, ...r });
-        console.log(`[KYC]   ${doc.name}: valid=${r.valid} type=${r.document_type} conf=${r.confidence}`);
-      } catch (err) {
-        console.error(`[KYC]   ${doc.name}: API error —`, err.message);
-        results.push({ name: doc.name, valid: false, confidence: 'low', document_type: 'unknown', reason: 'AI service error: ' + err.message });
-      }
-    }
-
-    // Decision logic: approve if any valid high-confidence doc with matching company name;
-    // reject if every doc is invalid with high confidence; otherwise keep pending.
-    const validHighConf = results.find(r =>
-      r.valid && r.confidence === 'high' &&
-      (r.company_name_match === true || r.company_name_match === 'not_applicable')
-    );
-    const allInvalidHighConf = results.length > 0 && results.every(r => !r.valid && r.confidence === 'high');
-
-    let newStatus = 'pending';
-    let summary = '';
-    if (validHighConf) {
-      newStatus = 'verified';
-      summary = `AI verified document "${validHighConf.name}" as ${validHighConf.document_type} (high confidence). ${validHighConf.reason}`;
-    } else if (allInvalidHighConf) {
-      newStatus = 'rejected';
-      summary = `AI rejected all documents. ${results[0].reason}`;
-    } else {
-      summary = 'Documents need manual review (AI confidence too low or mixed results).';
-    }
-
-    const verification = { status: newStatus, summary, results, model: KYC_MODEL, timestamp: new Date().toISOString() };
-    try {
-      run('UPDATE users SET kyc_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
-          [newStatus, JSON.stringify(verification), new Date().toISOString(), userId]);
-    } catch (err) {
-      console.error('[KYC] DB write failed:', err.message);
-      return;
-    }
-
-    console.log(`[KYC] Decision for ${user.email}: ${newStatus} — ${summary}`);
-    try {
-      await sendKycResultEmail(user, newStatus, summary);
-    } catch (err) {
-      console.error('[KYC] Email notification failed:', err.message);
-    }
-  } catch (err) {
-    console.error('[KYC] verifyKycAsync unexpected error:', err && err.stack ? err.stack : err);
-  }
-}
 
 function checkForMatches(newListing) {
   const compatible = queryAll(
@@ -476,9 +333,12 @@ function initDatabase() {
   try { db.run('ALTER TABLE matches ADD COLUMN commission_paid INTEGER NOT NULL DEFAULT 0'); } catch(e) {}
   try { db.run('ALTER TABLE matches ADD COLUMN stripe_session_id TEXT'); } catch(e) {}
 
-  // Migrate: add AI KYC verification columns to users
+  // Migrate: add KYC verification columns to users
   try { db.run('ALTER TABLE users ADD COLUMN ai_verification TEXT'); } catch(e) {}
   try { db.run('ALTER TABLE users ADD COLUMN ai_verified_at TEXT'); } catch(e) {}
+  // Migrate: add Stripe Identity columns (new KYC system)
+  try { db.run('ALTER TABLE users ADD COLUMN stripe_identity_session_id TEXT'); } catch(e) {}
+  try { db.run('ALTER TABLE users ADD COLUMN stripe_identity_status TEXT'); } catch(e) {}
 
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
@@ -547,19 +407,65 @@ function createApp() {
       console.error('Webhook signature verification failed:', err.message);
       return res.status(400).json({ error: 'Invalid signature' });
     }
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      const matchId = session.metadata && session.metadata.matchId;
-      if (matchId) {
-        try {
+    try {
+      // --- Commission payment (Stripe Checkout) ---
+      if (event.type === 'checkout.session.completed') {
+        const session = event.data.object;
+        const matchId = session.metadata && session.metadata.matchId;
+        if (matchId) {
           run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
           console.log(`Commission paid for match ${matchId}`);
           sseBroadcast(matchId, 'deal_confirmed', { matchId, at: new Date().toISOString() });
-        } catch (err) {
-          console.error('Failed to process checkout.session.completed for', matchId, err.message);
-          // Still return 200 so Stripe doesn't retry indefinitely
         }
       }
+      // --- Identity verification (Stripe Identity) ---
+      else if (event.type === 'identity.verification_session.verified') {
+        const session = event.data.object;
+        const userId = session.metadata && session.metadata.userId;
+        if (userId) {
+          const details = {
+            status: 'verified',
+            summary: 'Identity verified via Stripe Identity.',
+            stripeSessionId: session.id,
+            timestamp: new Date().toISOString()
+          };
+          run('UPDATE users SET kyc_status = ?, stripe_identity_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
+              ['verified', 'verified', JSON.stringify(details), new Date().toISOString(), userId]);
+          console.log(`[KYC] Stripe Identity verified for user ${userId}`);
+          const user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
+          if (user) sendKycResultEmail(user, 'verified', details.summary).catch(e => console.error('KYC email failed:', e.message));
+        }
+      }
+      else if (event.type === 'identity.verification_session.requires_input') {
+        const session = event.data.object;
+        const userId = session.metadata && session.metadata.userId;
+        const reason = (session.last_error && session.last_error.reason) || 'Verification failed — please try again with clearer photos.';
+        if (userId) {
+          const details = {
+            status: 'rejected',
+            summary: `Stripe Identity could not verify the submission: ${reason}`,
+            stripeSessionId: session.id,
+            lastError: session.last_error || null,
+            timestamp: new Date().toISOString()
+          };
+          run('UPDATE users SET kyc_status = ?, stripe_identity_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
+              ['rejected', 'requires_input', JSON.stringify(details), new Date().toISOString(), userId]);
+          console.log(`[KYC] Stripe Identity requires input for user ${userId}: ${reason}`);
+          const user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
+          if (user) sendKycResultEmail(user, 'rejected', details.summary).catch(e => console.error('KYC email failed:', e.message));
+        }
+      }
+      else if (event.type === 'identity.verification_session.canceled') {
+        const session = event.data.object;
+        const userId = session.metadata && session.metadata.userId;
+        if (userId) {
+          run('UPDATE users SET stripe_identity_status = ? WHERE id = ?', ['canceled', userId]);
+          console.log(`[KYC] Stripe Identity canceled for user ${userId}`);
+        }
+      }
+    } catch (err) {
+      console.error('Webhook handler error:', err.message);
+      // Return 200 anyway so Stripe doesn't retry indefinitely — we've already logged the failure.
     }
     res.json({ received: true });
   });
@@ -601,38 +507,14 @@ function createApp() {
     next();
   }
 
-  // KYC document validation constants
-  const VALID_DOC_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
-  const MIN_DOC_SIZE = 10 * 1024;          // 10 KB
-  const MAX_DOC_SIZE = 5 * 1024 * 1024;    // 5 MB
-  const MAX_DOCS = 5;
-
-  function validateDocuments(documents) {
-    if (!Array.isArray(documents) || documents.length === 0) {
-      return 'At least one KYC document is required';
-    }
-    if (documents.length > MAX_DOCS) {
-      return `Maximum ${MAX_DOCS} documents allowed`;
-    }
-    for (const d of documents) {
-      if (!d || typeof d !== 'object') return 'Invalid document format';
-      if (!d.name || !d.dataUrl) return 'Each document must have a name and content';
-      if (!VALID_DOC_TYPES.includes(d.type)) return `${d.name}: invalid file type. Only PDF, JPG, PNG accepted.`;
-      if (typeof d.size !== 'number' || d.size < MIN_DOC_SIZE) return `${d.name}: file too small (minimum 10 KB)`;
-      if (d.size > MAX_DOC_SIZE) return `${d.name}: file too large (maximum 5 MB)`;
-      if (typeof d.dataUrl !== 'string' || !d.dataUrl.startsWith('data:')) return `${d.name}: invalid file content`;
-    }
-    return null;
-  }
-
   // ========== Auth Routes ==========
+  // Registration no longer collects KYC documents — identity is verified
+  // via Stripe Identity after the account is created (see /api/kyc/start).
   app.post('/api/auth/register', (req, res) => {
-    const { email, password, companyName, companyReg, companyCountry, companyVat, contactName, contactPhone, contactPosition, ndaAccepted, documents } = req.body;
+    const { email, password, companyName, companyReg, companyCountry, companyVat, contactName, contactPhone, contactPosition, ndaAccepted } = req.body;
     if (!email || !password || !companyName || !companyReg || !companyCountry || !contactName) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
-    const docError = validateDocuments(documents);
-    if (docError) return res.status(400).json({ error: docError });
     if (!ndaAccepted) return res.status(400).json({ error: 'You must accept the NDA to register' });
     if (queryOne('SELECT id FROM users WHERE email = ?', [email])) {
       return res.status(409).json({ error: 'Email already registered.' });
@@ -640,27 +522,11 @@ function createApp() {
     const id = generateId('user');
     run(
       `INSERT INTO users (id,email,password,role,company_name,company_reg,company_country,company_vat,contact_name,contact_phone,contact_position,kyc_status,nda_accepted,documents,created_at)
-       VALUES (?,?,?,'user',?,?,?,?,?,?,?,'pending',?,?,?)`,
-      [id, email, hashPassword(password), companyName, companyReg, companyCountry, companyVat||'', contactName, contactPhone||'', contactPosition||'', ndaAccepted?1:0, JSON.stringify(documents||[]), new Date().toISOString()]
+       VALUES (?,?,?,'user',?,?,?,?,?,?,?,'pending',?,'[]',?)`,
+      [id, email, hashPassword(password), companyName, companyReg, companyCountry, companyVat||'', contactName, contactPhone||'', contactPosition||'', ndaAccepted?1:0, new Date().toISOString()]
     );
     res.status(201).json({ success: true, user: toUser(queryOne('SELECT * FROM users WHERE id = ?', [id])) });
-
-    // Fire-and-forget AI verification (non-blocking)
-    setImmediate(() => {
-      verifyKycAsync(id).catch(err => console.error('[KYC] verifyKycAsync threw:', err));
-    });
   });
-
-  // Admin-only: re-trigger AI verification for a user
-  app.post('/api/users/:id/verify-kyc', auth, adminOnly, ah(async (req, res) => {
-    if (!anthropic) return res.status(503).json({ error: 'AI verification not configured (ANTHROPIC_API_KEY missing)' });
-    const user = queryOne('SELECT id FROM users WHERE id = ?', [req.params.id]);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json({ success: true, message: 'Verification started' });
-    setImmediate(() => {
-      verifyKycAsync(req.params.id).catch(err => console.error('[KYC] re-verify threw:', err));
-    });
-  }));
 
   app.post('/api/auth/login', (req, res) => {
     const { email, password } = req.body;
@@ -1043,6 +909,65 @@ function createApp() {
     }
   }));
 
+  // ========== Stripe Identity (KYC) Routes ==========
+  // POST /api/kyc/start — creates a Stripe Identity VerificationSession and
+  // returns the hosted URL the client should redirect to.
+  app.post('/api/kyc/start', auth, ah(async (req, res) => {
+    if (!stripe) return res.status(503).json({ error: 'Stripe is not configured. Set STRIPE_SECRET_KEY.' });
+    if (req.user.kyc_status === 'verified') return res.status(400).json({ error: 'Already verified' });
+
+    const baseUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
+    try {
+      const session = await stripe.identity.verificationSessions.create({
+        type: 'document',
+        provided_details: { email: req.user.email },
+        metadata: {
+          userId: req.user.id,
+          companyName: req.user.company_name || '',
+          // Optional reference — Stripe Identity does not use price IDs, this is purely
+          // for accounting/reconciliation on your side if you want it.
+          priceId: process.env.STRIPE_IDENTITY_PRICE_ID || ''
+        },
+        options: {
+          document: {
+            allowed_types: ['driving_license', 'passport', 'id_card'],
+            require_matching_selfie: true,
+            require_live_capture: true,
+            require_id_number: false
+          }
+        },
+        return_url: `${baseUrl}/#kyc-complete`
+      });
+
+      run('UPDATE users SET stripe_identity_session_id = ?, stripe_identity_status = ? WHERE id = ?',
+          [session.id, session.status, req.user.id]);
+
+      res.json({ url: session.url, sessionId: session.id, status: session.status });
+    } catch (err) {
+      console.error('Stripe Identity session creation failed:', err.message);
+      res.status(500).json({ error: 'Failed to start identity verification' });
+    }
+  }));
+
+  // GET /api/kyc/status — returns the caller's current KYC status (for polling
+  // after the user returns from the Stripe-hosted flow).
+  app.get('/api/kyc/status', auth, (req, res) => {
+    const u = queryOne('SELECT kyc_status, stripe_identity_status, stripe_identity_session_id, ai_verification FROM users WHERE id = ?', [req.user.id]);
+    let reason = null;
+    try {
+      if (u && u.ai_verification) {
+        const parsed = JSON.parse(u.ai_verification);
+        reason = parsed.summary || parsed.reason || null;
+      }
+    } catch {}
+    res.json({
+      kycStatus: (u && u.kyc_status) || 'pending',
+      stripeStatus: (u && u.stripe_identity_status) || null,
+      sessionId: (u && u.stripe_identity_session_id) || null,
+      reason
+    });
+  });
+
   // ========== Stats ==========
   app.get('/api/stats', auth, adminOnly, (req, res) => {
     res.json({
@@ -1088,7 +1013,7 @@ function createApp() {
       checks: {
         database: dbOk ? 'ok' : 'error',
         stripe: stripe ? 'configured' : 'disabled',
-        anthropic: anthropic ? 'configured' : 'disabled',
+        stripeIdentity: stripe ? 'configured' : 'disabled',
         email: process.env.RESEND_API_KEY ? 'configured' : 'disabled'
       }
     };

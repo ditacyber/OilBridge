@@ -86,7 +86,6 @@ class Store {
   async getPendingUsers() { return (await this.api('GET', '/users?status=pending')) || []; }
   async getUser(id) { return await this.api('GET', '/users/' + id); }
   async updateUser(id, data) { return await this.api('PATCH', '/users/' + id, data); }
-  async reverifyKyc(id) { return await this.api('POST', '/users/' + id + '/verify-kyc'); }
 
   // --- Listings ---
   async getListings(filters) {
@@ -115,6 +114,10 @@ class Store {
   // --- Payments ---
   async createPaymentSession(matchId) { return await this.api('POST', '/payments/create-session', { matchId }); }
   async verifyPaymentSession(sessionId) { return await this.api('GET', '/payments/verify-session?session_id=' + sessionId); }
+
+  // --- KYC (Stripe Identity) ---
+  async startKyc() { return await this.api('POST', '/kyc/start'); }
+  async getKycStatus() { return await this.api('GET', '/kyc/status'); }
 
   // --- Chat ---
   async getChatMessages(matchId) { return await this.api('GET', '/matches/' + matchId + '/messages'); }

@@ -14,6 +14,7 @@
 
   let store;
   let activeEventSource = null;
+  let kycPollTimer = null;
   const i18n = new I18n();
 
   function closeActiveStream() {
@@ -134,6 +135,7 @@
   // === Rendering ===
   async function render() {
     closeActiveStream();
+    if (kycPollTimer) { clearInterval(kycPollTimer); kycPollTimer = null; }
     const route = getRoute();
     const main = document.getElementById('main-content');
     updateNav();
@@ -154,6 +156,7 @@
       blog: renderBlog,
       'payment-success': renderPaymentSuccess,
       chat: renderChat,
+      'kyc-complete': renderKycComplete,
     };
 
     const renderer = pages[route.page];
@@ -552,9 +555,9 @@
   function renderRegister(main) {
     if (store.isLoggedIn()) { navigate('home'); return; }
     setPageMeta('Register — Join the EU Oil Marketplace', 'Create your OilBridge account to start trading oil across Europe. KYC verification, NDA protection, and 3.2% transparent commission on completed trades.');
-    const steps = ['register_step_company','register_step_contact','register_step_kyc','register_step_nda','register_step_password'];
+    const steps = ['register_step_company','register_step_contact','register_step_nda','register_step_password'];
     let currentStep = 0;
-    let formData = { documents: [] };
+    let formData = {};
 
     function renderSteps() {
       return `<div class="steps">${steps.map((s, i) => `
@@ -581,29 +584,6 @@
            <div class="form-group"><label class="form-label" data-i18n="register_contact_phone">${esc(i18n.t('register_contact_phone'))}</label><input type="tel" class="form-input" id="reg-contact-phone" value="${esc(formData.contactPhone || '')}"></div>
            <div class="form-group"><label class="form-label" data-i18n="register_contact_position">${esc(i18n.t('register_contact_position'))}</label><input type="text" class="form-input" id="reg-contact-position" value="${esc(formData.contactPosition || '')}"></div>
          </div>`,
-
-        `<h3 class="mb-16" data-i18n="register_kyc_title">${esc(i18n.t('register_kyc_title'))}</h3>
-         <p class="text-muted mb-16" style="font-size:0.9rem" data-i18n="register_kyc_desc">${esc(i18n.t('register_kyc_desc'))}</p>
-         <div class="commission-banner" style="margin-bottom:24px">
-           <div class="commission-banner-icon">&#128196;</div>
-           <div class="commission-banner-text">Please upload a valid KYC document (ID card, passport or company registration). All accounts are <strong>manually reviewed by an administrator</strong> before being granted access to listings.</div>
-         </div>
-         <ul style="margin-bottom:24px;padding-left:20px;font-size:0.9rem;color:var(--text-secondary);line-height:2">
-           <li data-i18n="register_kyc_company_reg">${esc(i18n.t('register_kyc_company_reg'))}</li>
-           <li data-i18n="register_kyc_id">${esc(i18n.t('register_kyc_id'))}</li>
-           <li data-i18n="register_kyc_address">${esc(i18n.t('register_kyc_address'))}</li>
-         </ul>
-         <div class="upload-zone" id="upload-zone">
-           <div class="upload-zone-icon">${svgIcon('upload')}</div>
-           <div class="upload-zone-text" data-i18n="register_kyc_upload_hint">${esc(i18n.t('register_kyc_upload_hint'))}</div>
-           <div class="upload-zone-hint">PDF, JPG, PNG &middot; min 10 KB &middot; max 5 MB &middot; up to 5 files</div>
-           <input type="file" id="file-input" multiple accept="application/pdf,image/jpeg,image/png" style="display:none">
-         </div>
-         <div class="upload-file-list" id="upload-file-list">${formData.documents.map(d => {
-           const name = typeof d === 'object' ? d.name : d;
-           const sizeKb = typeof d === 'object' && d.size ? (d.size / 1024).toFixed(1) + ' KB' : '';
-           return `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(name)}</span>${sizeKb ? `<span class="text-muted" style="font-size:0.75rem">${sizeKb}</span>` : ''}<button class="file-remove" data-file="${esc(name)}">&times;</button></div>`;
-         }).join('')}</div>`,
 
         `<h3 class="mb-16" data-i18n="register_nda_title">${esc(i18n.t('register_nda_title'))}</h3>
          <p class="text-muted mb-24" style="font-size:0.9rem" data-i18n="register_nda_desc">${esc(i18n.t('register_nda_desc'))}</p>
@@ -641,63 +621,7 @@
       nextBtn.classList.toggle('hidden', currentStep === steps.length - 1);
       submitBtn.classList.toggle('hidden', currentStep !== steps.length - 1);
 
-      if (currentStep === 2) {
-        const zone = document.getElementById('upload-zone');
-        const input = document.getElementById('file-input');
-        zone.addEventListener('click', () => input.click());
-        zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('dragover'); });
-        zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
-        zone.addEventListener('drop', (e) => { e.preventDefault(); zone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
-        input.addEventListener('change', (e) => handleFiles(e.target.files));
-        document.querySelectorAll('.file-remove').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            const fname = e.target.dataset.file;
-            formData.documents = formData.documents.filter(d => (typeof d === 'object' ? d.name : d) !== fname);
-            renderForm();
-          });
-        });
-      }
       i18n.translatePage();
-    }
-
-    async function handleFiles(files) {
-      const VALID_TYPES = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
-      const MIN_SIZE = 10 * 1024;            // 10 KB
-      const MAX_SIZE = 5 * 1024 * 1024;      // 5 MB
-      const MAX_DOCS = 5;
-
-      for (const file of Array.from(files)) {
-        if (formData.documents.length >= MAX_DOCS) {
-          showToast(`Maximum ${MAX_DOCS} documents allowed.`, 'error');
-          break;
-        }
-        if (!VALID_TYPES.includes(file.type)) {
-          showToast(`${file.name}: invalid file type. Only PDF, JPG, PNG accepted.`, 'error');
-          continue;
-        }
-        if (file.size < MIN_SIZE) {
-          showToast(`${file.name}: file too small (minimum 10 KB).`, 'error');
-          continue;
-        }
-        if (file.size > MAX_SIZE) {
-          showToast(`${file.name}: file too large (maximum 5 MB).`, 'error');
-          continue;
-        }
-        if (formData.documents.find(d => (d.name || d) === file.name)) continue;
-
-        try {
-          const dataUrl = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-          });
-          formData.documents.push({ name: file.name, type: file.type, size: file.size, dataUrl });
-        } catch {
-          showToast(`Failed to read ${file.name}.`, 'error');
-        }
-      }
-      renderForm();
     }
 
     function saveStepData() {
@@ -718,9 +642,6 @@
           if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) { showToast('Please enter a valid email address.', 'error'); return false; }
           break;
         case 2:
-          if (formData.documents.length === 0) { showToast('Please upload at least one KYC document.', 'error'); return false; }
-          break;
-        case 3:
           formData.ndaAccepted = document.getElementById('nda-accept').checked;
           if (!formData.ndaAccepted) { showToast('You must accept the NDA to continue.', 'error'); return false; }
           break;
@@ -755,14 +676,40 @@
     document.getElementById('reg-submit-btn').addEventListener('click', async () => {
       const pw = document.getElementById('reg-password').value;
       const pwConfirm = document.getElementById('reg-password-confirm').value;
+      const submitBtn = document.getElementById('reg-submit-btn');
       if (pw.length < 8) { showToast('Password must be at least 8 characters.', 'error'); return; }
       if (!/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) { showToast('Password must contain at least one uppercase letter and one number.', 'error'); return; }
       if (pw !== pwConfirm) { showToast('Passwords do not match.', 'error'); return; }
       formData.password = pw;
+
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="spinner"></span> Creating account...';
+
       const result = await store.createUser(formData);
-      if (result && result.error) { showToast(result.error, 'error'); return; }
-      showToast(i18n.t('register_success'), 'success');
-      navigate('login');
+      if (result && result.error) {
+        showToast(result.error, 'error');
+        submitBtn.disabled = false;
+        submitBtn.textContent = i18n.t('register_submit');
+        return;
+      }
+
+      // Auto-login so we can start the Stripe Identity flow as the new user.
+      submitBtn.innerHTML = '<span class="spinner"></span> Starting identity verification...';
+      const loginResult = await store.login(formData.email, formData.password);
+      if (!loginResult || !loginResult.success) {
+        showToast('Account created — please log in to complete identity verification.', 'info');
+        navigate('login');
+        return;
+      }
+
+      const kyc = await store.startKyc();
+      if (kyc && kyc.url) {
+        // Redirect to Stripe-hosted identity verification
+        window.location.href = kyc.url;
+      } else {
+        showToast((kyc && kyc.error) || 'Identity verification is temporarily unavailable. You can retry from your profile.', 'error');
+        navigate('kyc-complete');
+      }
     });
     renderForm();
   }
@@ -1025,15 +972,40 @@
               <div class="admin-stat-card"><div class="admin-stat-value">${user.ndaAccepted ? 'Yes' : 'No'}</div><div class="admin-stat-label">NDA Accepted</div></div>
             </div>
           </div>
-          ${user.documents && user.documents.length ? `
+
           <div class="card mt-24">
-            <h3 class="mb-16">KYC Documents</h3>
-            <div style="display:flex;flex-direction:column;gap:8px">
-              ${user.documents.map(d => `<div class="upload-file-item">${svgIcon('file')}<span class="file-name">${esc(d)}</span><span class="badge badge-${user.kycStatus === 'verified' ? 'success' : 'warning'}" style="margin-left:auto">${esc(user.kycStatus)}</span></div>`).join('')}
+            <div class="flex-between mb-16" style="align-items:flex-start">
+              <div>
+                <h3>Identity Verification</h3>
+                <p class="text-muted" style="font-size:0.85rem;margin-top:4px">Powered by Stripe Identity</p>
+              </div>
+              <div>${kycBadge}</div>
             </div>
-          </div>` : ''}
+            ${user.kycStatus === 'verified' ? `
+              <p style="color:var(--text-secondary);font-size:0.9rem">Your identity has been verified. You have full access to the marketplace.</p>
+            ` : user.kycStatus === 'rejected' ? `
+              <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px">Your last verification attempt was unsuccessful. You can try again — make sure your ID photo is clear and you are clearly holding the ID in your selfie.</p>
+              <button class="btn btn-primary" id="profile-kyc-start-btn">Retry Identity Verification</button>
+            ` : `
+              <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px">Complete your identity verification to unlock placing listings and matching with traders. You'll be redirected to Stripe's secure verification flow — it takes about 2 minutes.</p>
+              <button class="btn btn-primary" id="profile-kyc-start-btn">Start Identity Verification</button>
+            `}
+          </div>
         </div>
       </section>`;
+
+    const kycBtn = document.getElementById('profile-kyc-start-btn');
+    if (kycBtn) kycBtn.addEventListener('click', async () => {
+      kycBtn.disabled = true;
+      kycBtn.innerHTML = '<span class="spinner"></span> Starting...';
+      const result = await store.startKyc();
+      if (result && result.url) window.location.href = result.url;
+      else {
+        kycBtn.disabled = false;
+        kycBtn.textContent = user.kycStatus === 'rejected' ? 'Retry Identity Verification' : 'Start Identity Verification';
+        showToast((result && result.error) || 'Could not start verification', 'error');
+      }
+    });
   }
 
   // ============================================================
@@ -1185,59 +1157,49 @@
       if (docsBtn) {
         const u = await store.getUser(docsBtn.dataset.id);
         if (u && !u.error) {
-          const docsHtml = (u.documents || []).map(d => {
-            const name = typeof d === 'object' ? d.name : d;
-            const type = typeof d === 'object' ? d.type : '';
-            const size = typeof d === 'object' && d.size ? (d.size / 1024).toFixed(1) + ' KB' : '';
-            const dataUrl = typeof d === 'object' ? d.dataUrl : null;
-            return `<div class="upload-file-item" style="padding:12px 14px">
-              ${svgIcon('file')}
-              <div style="flex:1;min-width:0">
-                <div class="file-name">${esc(name)}</div>
-                <div class="text-muted" style="font-size:0.75rem;margin-top:2px">${esc(type)} ${size ? '&middot; ' + size : ''}</div>
+          // Legacy document display (for users who registered before Stripe Identity rollout)
+          const legacyDocsHtml = (u.documents || []).length ? `
+            <div style="margin-top:16px">
+              <div class="text-muted" style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Legacy documents</div>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                ${u.documents.map(d => {
+                  const name = typeof d === 'object' ? d.name : d;
+                  const type = typeof d === 'object' ? d.type : '';
+                  const size = typeof d === 'object' && d.size ? (d.size / 1024).toFixed(1) + ' KB' : '';
+                  const dataUrl = typeof d === 'object' ? d.dataUrl : null;
+                  return `<div class="upload-file-item" style="padding:10px 12px;font-size:0.85rem">
+                    ${svgIcon('file')}
+                    <div style="flex:1;min-width:0">
+                      <div class="file-name">${esc(name)}</div>
+                      <div class="text-muted" style="font-size:0.7rem">${esc(type)} ${size ? '&middot; ' + size : ''}</div>
+                    </div>
+                    ${dataUrl ? `<a href="${dataUrl}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">View</a>` : ''}
+                  </div>`;
+                }).join('')}
               </div>
-              ${dataUrl
-                ? `<a href="${dataUrl}" target="_blank" rel="noopener" download="${esc(name)}" class="btn btn-secondary btn-sm">View</a>`
-                : '<span class="badge badge-warning">Legacy</span>'}
-            </div>`;
-          }).join('');
+            </div>` : '';
 
-          // AI verification panel
-          let aiPanel = '';
-          if (u.aiVerification) {
-            const v = u.aiVerification;
-            const decisionClass = { verified: 'success', rejected: 'error', pending: 'warning' }[v.status] || 'info';
-            const perDocResults = (v.results || []).map(r => `
-              <div style="padding:8px 12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:0.8rem;margin-top:6px">
-                <div style="display:flex;justify-content:space-between;gap:8px">
-                  <strong>${esc(r.name)}</strong>
-                  <span>${r.valid ? '&#10003;' : '&#10007;'} ${esc(r.document_type || 'unknown')} <span class="text-muted">(${esc(r.confidence)})</span></span>
-                </div>
-                <div class="text-muted" style="margin-top:4px">${esc(r.reason || '')}</div>
-                ${r.company_name_match !== undefined ? `<div class="text-muted" style="margin-top:2px">Company name match: ${esc(String(r.company_name_match))}</div>` : ''}
+          // Stripe Identity status panel (new KYC system)
+          const stripeBadgeClass = { verified: 'success', requires_input: 'error', canceled: 'warning', processing: 'info' }[u.stripeIdentityStatus] || 'info';
+          const details = u.kycDetails;
+          const identityPanel = u.stripeIdentitySessionId ? `
+            <div style="margin-top:16px;padding:16px;background:var(--bg-tertiary);border:1px solid var(--accent-border);border-radius:var(--radius-sm)">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <strong style="color:var(--accent)">Stripe Identity</strong>
+                ${u.stripeIdentityStatus ? `<span class="badge badge-${stripeBadgeClass}">${esc(u.stripeIdentityStatus)}</span>` : ''}
+                ${u.kycVerifiedAt ? `<span class="text-muted" style="font-size:0.75rem;margin-left:auto">${formatDate(u.kycVerifiedAt)}</span>` : ''}
               </div>
-            `).join('');
-            aiPanel = `
-              <div style="margin-top:20px;padding:16px;background:var(--bg-tertiary);border:1px solid var(--accent-border);border-radius:var(--radius-sm)">
-                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-                  <strong style="color:var(--accent)">AI Verification</strong>
-                  <span class="badge badge-${decisionClass}">${esc(v.status)}</span>
-                  <span class="text-muted" style="font-size:0.75rem;margin-left:auto">${esc(v.model || '')} &middot; ${formatDate(v.timestamp)}</span>
-                </div>
-                <div style="font-size:0.85rem;color:var(--text-secondary)">${esc(v.summary || '')}</div>
-                ${perDocResults}
-              </div>`;
-          } else if (u.role !== 'admin') {
-            aiPanel = `<div style="margin-top:16px;padding:12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:0.85rem;color:var(--text-muted);text-align:center">
-              No AI verification on file. ${u.documents && u.documents.length ? '<button class="btn btn-ghost btn-sm" id="modal-reverify-btn" data-id="' + esc(u.id) + '" style="margin-left:8px">Run AI Check</button>' : ''}
+              <div class="text-muted" style="font-size:0.75rem;font-family:var(--font-mono);word-break:break-all;margin-bottom:6px">${esc(u.stripeIdentitySessionId)}</div>
+              ${details && details.summary ? `<div style="font-size:0.85rem;color:var(--text-secondary)">${esc(details.summary)}</div>` : ''}
+            </div>` : `
+            <div style="margin-top:16px;padding:12px;background:var(--bg-tertiary);border-radius:var(--radius-sm);font-size:0.85rem;color:var(--text-muted);text-align:center">
+              No Stripe Identity session on file — the user has not started verification yet.
             </div>`;
-          }
 
           const kycActions = u.role === 'admin' ? '' : `
             <div style="display:flex;gap:8px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);align-items:center">
-              <button class="btn btn-success btn-sm" id="modal-approve-btn" data-id="${esc(u.id)}">Approve User</button>
-              <button class="btn btn-danger btn-sm" id="modal-reject-btn" data-id="${esc(u.id)}">Reject User</button>
-              ${u.aiVerification ? `<button class="btn btn-ghost btn-sm" id="modal-reverify-btn" data-id="${esc(u.id)}">Re-run AI</button>` : ''}
+              <button class="btn btn-success btn-sm" id="modal-approve-btn" data-id="${esc(u.id)}">Override: Approve</button>
+              <button class="btn btn-danger btn-sm" id="modal-reject-btn" data-id="${esc(u.id)}">Override: Reject</button>
               <span class="badge badge-${{verified:'success',pending:'warning',rejected:'error'}[u.kycStatus] || 'info'}" style="margin-left:auto">${esc(u.kycStatus)}</span>
             </div>`;
 
@@ -1245,19 +1207,14 @@
             `<div style="margin-bottom:12px;font-size:0.85rem;color:var(--text-secondary)">
               <strong>${esc(u.contactName)}</strong> &middot; ${esc(u.email)} &middot; ${esc(u.companyCountry)}
             </div>
-            <div style="display:flex;flex-direction:column;gap:8px">
-              ${docsHtml}
-              ${(!u.documents || !u.documents.length) ? '<p class="text-muted">No documents uploaded.</p>' : ''}
-            </div>
-            ${aiPanel}
+            ${identityPanel}
+            ${legacyDocsHtml}
             ${kycActions}`,
             `<button class="btn btn-secondary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Close</button>`
           );
 
-          // Wire up modal-level approve/reject/reverify buttons
           const approveBtn = document.getElementById('modal-approve-btn');
           const rejectBtn = document.getElementById('modal-reject-btn');
-          const reverifyBtn = document.getElementById('modal-reverify-btn');
           if (approveBtn) approveBtn.addEventListener('click', async () => {
             await store.updateUser(approveBtn.dataset.id, { kycStatus: 'verified' });
             closeModal(); showToast('User approved.', 'success'); await renderTab();
@@ -1265,15 +1222,6 @@
           if (rejectBtn) rejectBtn.addEventListener('click', async () => {
             await store.updateUser(rejectBtn.dataset.id, { kycStatus: 'rejected' });
             closeModal(); showToast('User rejected.', 'info'); await renderTab();
-          });
-          if (reverifyBtn) reverifyBtn.addEventListener('click', async () => {
-            const r = await store.reverifyKyc(reverifyBtn.dataset.id);
-            if (r && r.success) {
-              showToast('AI verification re-started — refresh in a few seconds.', 'info');
-              closeModal();
-            } else {
-              showToast((r && r.error) || 'Failed to start verification', 'error');
-            }
           });
         }
       }
@@ -1520,6 +1468,102 @@
           </div>
         </div>
       </section>`;
+  }
+
+  // ============================================================
+  // PAGE: KYC Complete (returned from Stripe Identity)
+  // ============================================================
+  async function renderKycComplete(main) {
+    setPageMeta('Identity Verification', 'Processing your identity verification result from Stripe.');
+    const user = store.getCurrentUser();
+    if (!user) { navigate('login'); return; }
+
+    function renderState(state, reason) {
+      let iconHtml, title, body, actions;
+      if (state === 'verified') {
+        iconHtml = '<div style="font-size:4rem;margin-bottom:16px">&#9989;</div>';
+        title = 'Identity Verified!';
+        body = 'Your identity has been confirmed by Stripe. You now have full access to the OilBridge marketplace.';
+        actions = `<a href="#home" class="btn btn-primary">Continue to Marketplace</a>
+                   <a href="#listings" class="btn btn-secondary">Browse Listings</a>`;
+      } else if (state === 'rejected') {
+        iconHtml = '<div style="font-size:4rem;margin-bottom:16px">&#10060;</div>';
+        title = 'Verification Unsuccessful';
+        body = reason
+          ? `We could not verify your identity. ${esc(reason)}`
+          : 'Stripe was not able to verify the documents you provided. This can happen if photos are unclear or the ID type is not supported.';
+        actions = `<button class="btn btn-primary" id="kyc-retry-btn">Try Verification Again</button>
+                   <a href="#profile" class="btn btn-secondary">Go to Profile</a>`;
+      } else if (state === 'processing') {
+        iconHtml = '<div class="spinner" style="width:48px;height:48px;border-width:4px;margin:0 auto 16px"></div>';
+        title = 'Verifying your identity...';
+        body = 'Stripe is reviewing your submission. This usually takes just a few seconds — this page will update automatically.';
+        actions = `<a href="#profile" class="btn btn-ghost btn-sm">Check later from your profile</a>`;
+      } else {
+        iconHtml = '<div style="font-size:4rem;margin-bottom:16px">&#9888;</div>';
+        title = 'Still processing';
+        body = 'Your verification is taking longer than usual. You will receive an email when it is complete. You can also check back later from your profile.';
+        actions = `<a href="#profile" class="btn btn-primary">Go to Profile</a>`;
+      }
+
+      main.innerHTML = `
+        <section class="page-section">
+          <div class="container" style="max-width:600px">
+            <div class="card text-center" style="padding:48px 32px">
+              ${iconHtml}
+              <h2 style="margin-bottom:8px">${esc(title)}</h2>
+              <p style="color:var(--text-secondary);margin-bottom:24px;line-height:1.6">${body}</p>
+              <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">${actions}</div>
+            </div>
+          </div>
+        </section>`;
+
+      const retryBtn = document.getElementById('kyc-retry-btn');
+      if (retryBtn) retryBtn.addEventListener('click', async () => {
+        retryBtn.disabled = true;
+        retryBtn.innerHTML = '<span class="spinner"></span> Starting...';
+        const kyc = await store.startKyc();
+        if (kyc && kyc.url) window.location.href = kyc.url;
+        else { retryBtn.disabled = false; retryBtn.textContent = 'Try Verification Again'; showToast((kyc && kyc.error) || 'Could not start verification', 'error'); }
+      });
+    }
+
+    // Stop any previous polling
+    if (kycPollTimer) { clearInterval(kycPollTimer); kycPollTimer = null; }
+
+    // Fast first check — then poll every 2s for up to 60s waiting for the webhook
+    renderState('processing');
+    let attempts = 0;
+    const maxAttempts = 30;
+
+    async function checkOnce() {
+      attempts++;
+      const status = await store.getKycStatus();
+      if (!status || status.error) return false;
+      if (status.kycStatus === 'verified') {
+        await store.refreshUser(); // refresh cached user so UI shows new status
+        updateNav();
+        renderState('verified');
+        return true;
+      }
+      if (status.kycStatus === 'rejected') {
+        await store.refreshUser();
+        updateNav();
+        renderState('rejected', status.reason);
+        return true;
+      }
+      return false;
+    }
+
+    // Initial check, then poll
+    if (await checkOnce()) return;
+    kycPollTimer = setInterval(async () => {
+      if (await checkOnce() || attempts >= maxAttempts) {
+        clearInterval(kycPollTimer);
+        kycPollTimer = null;
+        if (attempts >= maxAttempts) renderState('timeout');
+      }
+    }, 2000);
   }
 
   // ============================================================

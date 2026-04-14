@@ -490,12 +490,41 @@ function createApp() {
     res.json({ status: 'ok', port: PORT, timestamp: new Date().toISOString() });
   });
 
+  // ========== SEO: sitemap.xml & robots.txt (served inline for reliability) ==========
+  const SITE_URL = process.env.SITE_URL || 'https://www.oilbridge.eu';
+  const SITEMAP_URLS = [
+    { loc: '/',                                changefreq: 'daily',   priority: '1.0' },
+    { loc: '/#listings',                       changefreq: 'hourly',  priority: '0.9' },
+    { loc: '/#register',                       changefreq: 'monthly', priority: '0.8' },
+    { loc: '/#login',                          changefreq: 'monthly', priority: '0.7' },
+    { loc: '/#blog',                           changefreq: 'weekly',  priority: '0.8' },
+    { loc: '/#blog/buy-oil-bulk-europe',       changefreq: 'monthly', priority: '0.7' },
+    { loc: '/#blog/eu-oil-marketplace-guide-sme', changefreq: 'monthly', priority: '0.7' },
+    { loc: '/#blog/sell-surplus-oil-europe',   changefreq: 'monthly', priority: '0.7' },
+    { loc: '/#terms',                          changefreq: 'yearly',  priority: '0.3' },
+    { loc: '/#privacy',                        changefreq: 'yearly',  priority: '0.3' },
+  ];
+
+  app.get('/sitemap.xml', (req, res) => {
+    const today = new Date().toISOString().split('T')[0];
+    const urls = SITEMAP_URLS.map(u =>
+      `  <url>\n    <loc>${SITE_URL}${u.loc}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>${u.changefreq}</changefreq>\n    <priority>${u.priority}</priority>\n  </url>`
+    ).join('\n');
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
+    res.set('Content-Type', 'application/xml; charset=utf-8');
+    res.send(xml);
+  });
+
+  app.get('/robots.txt', (req, res) => {
+    const txt = `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}/sitemap.xml\n`;
+    res.set('Content-Type', 'text/plain; charset=utf-8');
+    res.send(txt);
+  });
+
   // ========== Static & SPA fallback ==========
   app.use('/css', express.static(path.join(__dirname, 'css')));
   app.use('/js', express.static(path.join(__dirname, 'js')));
   app.use('/assets', express.static(path.join(__dirname, 'assets')));
-  app.get('/sitemap.xml', (req, res) => res.sendFile(path.join(__dirname, 'sitemap.xml')));
-  app.get('/robots.txt', (req, res) => res.type('text/plain').sendFile(path.join(__dirname, 'robots.txt')));
   app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
   return app;

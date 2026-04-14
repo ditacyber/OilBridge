@@ -1,52 +1,52 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://oilbridge.eu/</loc>
+    <loc>https://www.oilbridge.eu/</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#listings</loc>
+    <loc>https://www.oilbridge.eu/#listings</loc>
     <changefreq>hourly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#register</loc>
+    <loc>https://www.oilbridge.eu/#register</loc>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#login</loc>
+    <loc>https://www.oilbridge.eu/#login</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#blog</loc>
+    <loc>https://www.oilbridge.eu/#blog</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#blog/buy-oil-bulk-europe</loc>
+    <loc>https://www.oilbridge.eu/#blog/buy-oil-bulk-europe</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#blog/eu-oil-marketplace-guide-sme</loc>
+    <loc>https://www.oilbridge.eu/#blog/eu-oil-marketplace-guide-sme</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#blog/sell-surplus-oil-europe</loc>
+    <loc>https://www.oilbridge.eu/#blog/sell-surplus-oil-europe</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#terms</loc>
+    <loc>https://www.oilbridge.eu/#terms</loc>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://oilbridge.eu/#privacy</loc>
+    <loc>https://www.oilbridge.eu/#privacy</loc>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>

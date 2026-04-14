@@ -486,7 +486,7 @@ function createApp() {
   });
 
   // ========== Health Check ==========
-  app.get('/api/health', (req, res) => {
+  app.get(['/health', '/api/health'], (req, res) => {
     res.json({ status: 'ok', port: PORT, timestamp: new Date().toISOString() });
   });
 

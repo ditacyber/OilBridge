@@ -854,13 +854,15 @@
 
           ${isAccepted && counterparty ? `
           <div class="match-contact">
-            <h4>${esc(i18n.t('match_contact_info'))}</h4>
+            <h4>${esc(i18n.t('match_counterparty'))}</h4>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.9rem">
-              <div><strong>${esc(i18n.t('match_counterparty'))}:</strong> ${esc(counterparty.companyName)}</div>
-              <div><strong>Contact:</strong> ${esc(counterparty.contactName)}</div>
-              <div><strong>Email:</strong> ${esc(counterparty.email)}</div>
-              <div><strong>Phone:</strong> ${esc(counterparty.contactPhone || 'N/A')}</div>
+              <div><strong>Company:</strong> ${esc(counterparty.companyName)}</div>
+              <div><strong>Country:</strong> ${esc(counterparty.companyCountry || 'N/A')}</div>
+              <div style="grid-column:1/-1"><strong>Deal Reference:</strong> <code style="background:var(--bg-tertiary);padding:2px 8px;border-radius:4px;font-size:0.85rem">${esc(match.dealRef || match.id)}</code></div>
             </div>
+            <p style="margin-top:12px;font-size:0.8rem;color:var(--text-muted);line-height:1.5">
+              ${svgIcon('lock')} For security, personal contact details are never shared. All coordination — including after commission is paid — happens via the OilBridge chat below.
+            </p>
           </div>` : `
           <div class="match-locked">
             ${svgIcon('lock')}
@@ -873,12 +875,12 @@
               <button class="btn btn-primary btn-sm match-accept-btn" data-id="${esc(match.id)}" data-i18n="match_accept">${esc(i18n.t('match_accept'))}</button>
               <button class="btn btn-ghost btn-sm match-decline-btn" data-id="${esc(match.id)}" data-i18n="match_decline">${esc(i18n.t('match_decline'))}</button>
             ` : ''}
-            ${isAccepted && !match.commissionPaid
+            ${isAccepted
               ? `<a href="#chat/${esc(match.id)}" class="btn btn-primary btn-sm">&#128172; Open Chat</a>`
               : ''}
           </div>
           ${match.commissionPaid
-            ? `<span class="badge badge-success" style="padding:8px 14px;font-size:0.8rem">${svgIcon('check')} Commission Paid</span>`
+            ? `<span class="badge badge-success" style="padding:8px 14px;font-size:0.8rem">${svgIcon('check')} Commission Paid &middot; Deal Confirmed</span>`
             : isAccepted
               ? `<button class="btn btn-secondary btn-sm match-stripe-btn" data-matchid="${esc(match.id)}">${svgIcon('stripe')} <span data-i18n="match_pay_commission">${esc(i18n.t('match_pay_commission'))}</span></button>`
               : ''}
@@ -1210,7 +1212,7 @@
     if (!user) { navigate('login'); return; }
     if (!matchId) { navigate('matches'); return; }
 
-    setPageMeta('Chat', 'Private chat between matched buyer and seller. Communication stays on OilBridge until commission is paid.');
+    setPageMeta('Chat', 'Private chat between matched buyer and seller. All coordination happens on OilBridge — personal contact details are never shared.');
 
     const data = await store.getChatMessages(matchId);
     if (!data || data.error) {
@@ -1219,44 +1221,61 @@
     }
 
     const { match, messages } = data;
-    const isClosed = match.commissionPaid || match.status !== 'accepted';
+    const isAvailable = match.status === 'accepted' || match.status === 'completed';
+    const dealRef = 'OB-' + String(matchId).slice(-8).toUpperCase();
 
     main.innerHTML = `
       <div class="chat-page">
         <a href="#matches" class="btn btn-ghost btn-sm mb-16">&larr; Back to Matches</a>
 
-        ${isClosed ? `
+        ${!isAvailable ? `
           <div class="chat-closed-banner">
-            <h3>${match.commissionPaid ? '&#10003; Deal Confirmed' : '&#9888; Chat Unavailable'}</h3>
-            <p>${match.commissionPaid
-              ? 'Commission has been paid. Please arrange delivery directly with your counterparty using the contact details shown on the match page.'
-              : 'Chat is only available for accepted matches that have not yet been paid.'}</p>
+            <h3>&#9888; Chat Unavailable</h3>
+            <p>Chat is only available for accepted matches.</p>
           </div>
-        ` : `
-          <div class="chat-warning-banner">
-            &#9888; All messages stay on OilBridge until commission is paid. Sharing email, phone, WhatsApp, or other direct contact info is automatically blocked and logged.
+        ` : match.commissionPaid ? `
+          <div class="chat-confirmed-banner">
+            <h3>&#10003; Deal Confirmed &middot; Commission Paid</h3>
+            <p>Deal reference: <code>${esc(dealRef)}</code><br>
+            All logistics coordination continues here on OilBridge. Personal contact details remain protected.</p>
           </div>
-        `}
+        ` : ''}
+
+        <div class="chat-warning-banner">
+          &#9888; <strong>Sharing personal contact details (email, phone, WhatsApp, Telegram, etc.) violates our Terms of Service and NDA agreement.</strong> All communication must remain on OilBridge, including after commission is paid. Attempts are automatically blocked and logged for admin review.
+        </div>
 
         <div class="chat-header">
           <div class="chat-header-info">
-            <h3>Match ${esc(matchId)}</h3>
+            <h3>Deal <code>${esc(dealRef)}</code></h3>
             <div class="text-muted"><span class="chat-status-dot" id="chat-status-dot"></span><span id="chat-status-text">Connecting...</span></div>
           </div>
-          ${!isClosed
+          ${isAvailable && !match.commissionPaid
             ? `<button class="btn btn-secondary btn-sm match-stripe-btn" data-matchid="${esc(matchId)}">${svgIcon('stripe')} Pay Commission</button>`
             : ''}
         </div>
 
         <div class="chat-body" id="chat-body">
           ${messages.length === 0
-            ? '<div class="chat-empty">No messages yet. Say hello!</div>'
+            ? '<div class="chat-empty">No messages yet. Use the templates below to coordinate logistics.</div>'
             : messages.map(m => renderChatMessage(m, user)).join('')}
         </div>
 
+        ${isAvailable ? `
+          <div class="chat-templates" id="chat-templates">
+            <span class="chat-templates-label">Templates:</span>
+            <button class="chat-template-btn" data-template="delivery_address">&#128205; Delivery</button>
+            <button class="chat-template-btn" data-template="quantity">&#128230; Quantity</button>
+            <button class="chat-template-btn" data-template="date">&#128197; Date</button>
+            <button class="chat-template-btn" data-template="transport">&#128674; Transport</button>
+            <button class="chat-template-btn" data-template="price">&#128176; Price</button>
+            <button class="chat-template-btn" data-template="documents">&#128196; Documents</button>
+          </div>
+        ` : ''}
+
         <div class="chat-input">
-          <textarea id="chat-input" placeholder="Type a message... (Shift+Enter for newline)" ${isClosed ? 'disabled' : ''}></textarea>
-          <button class="btn btn-primary" id="chat-send-btn" ${isClosed ? 'disabled' : ''}>Send</button>
+          <textarea id="chat-input" placeholder="Type a message... (Shift+Enter for newline)" ${!isAvailable ? 'disabled' : ''}></textarea>
+          <button class="btn btn-primary" id="chat-send-btn" ${!isAvailable ? 'disabled' : ''}>Send</button>
         </div>
       </div>`;
 
@@ -1308,6 +1327,27 @@
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
     });
 
+    // Logistics template buttons
+    const LOGISTICS_TEMPLATES = {
+      delivery_address: '📍 Delivery address confirmation\n\nPort / terminal: \nCountry: \nReceiving party: \nSpecial handling instructions: ',
+      quantity: '📦 Quantity confirmation\n\nProduct: \nQuantity: \nQuality specification: \nTolerance (+/- %): ',
+      date: '📅 Delivery date proposal\n\nProposed loading window: \nProposed delivery date: \nFlexibility (+/- days): \nPlease confirm or suggest alternative.',
+      transport: '🛳️ Transport details\n\nVessel / mode of transport: \nIncoterms (FOB / CIF / DES / DAP): \nETA at loading port: \nETA at discharge port: ',
+      price: '💰 Final price confirmation\n\nAgreed unit price: \nCurrency: \nTotal contract value: \nPayment terms: ',
+      documents: '📄 Documentation request\n\nPlease share the following via OilBridge chat:\n- Bill of Lading\n- SGS / Intertek inspection report\n- Certificate of Origin\n- Quality analysis certificate\n- Commercial invoice',
+    };
+    document.querySelectorAll('.chat-template-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = LOGISTICS_TEMPLATES[btn.dataset.template];
+        if (!t) return;
+        input.value = t;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+      });
+    });
+
     // Stripe pay-commission button (in the chat header)
     const stripeBtn = main.querySelector('.match-stripe-btn');
     if (stripeBtn) stripeBtn.addEventListener('click', async () => {
@@ -1317,8 +1357,8 @@
       else { stripeBtn.disabled = false; showToast((result && result.error) || 'Payment service unavailable', 'error'); }
     });
 
-    // Open SSE for live updates (only if chat is open)
-    if (!isClosed && typeof EventSource !== 'undefined') {
+    // Open SSE for live updates (chat stays open before AND after payment)
+    if (isAvailable && typeof EventSource !== 'undefined') {
       const es = new EventSource(store.chatStreamUrl(matchId));
       activeEventSource = es;
 
@@ -1334,12 +1374,14 @@
         try { appendMessage(JSON.parse(e.data)); } catch {}
       });
       es.addEventListener('deal_confirmed', () => {
-        appendSystem('✓ Deal confirmed — commission has been paid. Please arrange delivery directly. This chat is now closed.', 'success');
-        input.disabled = true;
-        sendBtn.disabled = true;
-        es.close();
+        // Commission has been paid — chat stays OPEN so parties can continue
+        // coordinating logistics. Contact details are never revealed.
+        appendSystem('✓ Commission paid — deal confirmed. Continue coordinating logistics here on OilBridge.', 'success');
+        // Remove the "Pay Commission" button if still present
+        const sBtn = main.querySelector('.match-stripe-btn');
+        if (sBtn) sBtn.remove();
       });
-    } else if (isClosed) {
+    } else if (!isAvailable) {
       statusDot.classList.add('disconnected');
       statusText.textContent = 'Closed';
     }

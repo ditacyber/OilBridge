@@ -742,10 +742,17 @@ function createApp() {
       const cpId = m.buyer_id === userId ? m.seller_id : m.buyer_id;
       let counterparty = null;
       if (isAccepted) {
-        const cp = queryOne('SELECT company_name, contact_name, email, contact_phone FROM users WHERE id = ?', [cpId]);
-        if (cp) counterparty = { companyName: cp.company_name, contactName: cp.contact_name, email: cp.email, contactPhone: cp.contact_phone };
+        // SECURITY: never expose contact_name / email / contact_phone to the counterparty —
+        // all coordination must go through OilBridge chat, including after payment.
+        const cp = queryOne('SELECT company_name, company_country FROM users WHERE id = ?', [cpId]);
+        if (cp) counterparty = { companyName: cp.company_name, companyCountry: cp.company_country };
       }
-      return { ...toMatch(m), listing: listing ? { oilType: listing.oil_type, unit: listing.unit } : null, counterparty };
+      return {
+        ...toMatch(m),
+        dealRef: 'OB-' + String(m.id).slice(-8).toUpperCase(),
+        listing: listing ? { oilType: listing.oil_type, unit: listing.unit } : null,
+        counterparty
+      };
     });
     res.json(enriched);
   });
@@ -807,8 +814,11 @@ function createApp() {
   app.post('/api/matches/:id/messages', auth, ah(async (req, res) => {
     const r = getMatchAsParticipant(req.params.id, req.user.id);
     if (r.error) return res.status(r.code).json({ error: r.error });
-    if (r.match.status !== 'accepted') return res.status(400).json({ error: 'Chat is only available on accepted matches' });
-    if (r.match.commission_paid) return res.status(400).json({ error: 'Commission already paid — chat is closed' });
+    // Chat stays open on accepted AND completed matches — all logistics coordination happens here,
+    // including post-payment delivery arrangements. Contact details are never revealed.
+    if (r.match.status !== 'accepted' && r.match.status !== 'completed') {
+      return res.status(400).json({ error: 'Chat is only available on accepted matches' });
+    }
 
     const body = String(req.body.body || '').trim();
     if (!body) return res.status(400).json({ error: 'Message body required' });
@@ -828,7 +838,7 @@ function createApp() {
       return res.status(200).json({
         blocked: true,
         reason: blockedReason,
-        message: 'Your message contained contact information and was blocked. All deal communication must stay on OilBridge until commission is paid.'
+        message: 'SECURITY WARNING: your message contained contact information and was blocked. Sharing personal contact details (email, phone, WhatsApp, etc.) violates our Terms of Service and NDA agreement. All communication must remain on OilBridge, including after commission is paid.'
       });
     }
 

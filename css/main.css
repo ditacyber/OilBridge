@@ -366,6 +366,13 @@ h1, h2, h3, h4, h5, h6 { line-height: 1.3; color: var(--text-primary); }
 .hero-stat { text-align: center; }
 .hero-stat-value { font-size: 2rem; font-weight: 800; color: var(--accent); }
 .hero-stat-label { font-size: 0.85rem; color: var(--text-muted); margin-top: 4px; }
+.hero-launch-note {
+  margin-top: 48px; padding: 20px 28px; border-top: 1px solid var(--border);
+  max-width: 640px; margin-left: auto; margin-right: auto;
+}
+.hero-launch-note p {
+  font-size: 1rem; color: var(--accent); font-weight: 600; margin: 0;
+}
 
 /* === Listing Cards === */
 .listings-grid {

@@ -1,3 +1,5 @@
+require('./load-env').loadEnv();
+
 const express = require('express');
 const initSqlJs = require('sql.js');
 const Stripe = require('stripe');

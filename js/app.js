@@ -215,6 +215,7 @@
     const verifiedTraders = publicStats.verifiedTraders || 0;
     const activeListings = publicStats.activeListings || listings.length || 0;
     const totalVolumeEur = publicStats.totalVolumeEur || 0;
+    const hasStats = completedDeals > 0 || verifiedTraders > 0 || activeListings > 0 || totalVolumeEur > 0;
 
     // Primary CTA routes based on login state
     const homeUser = store.getCurrentUser();
@@ -262,6 +263,7 @@
             <a href="#listings" class="btn btn-primary btn-lg">${esc(i18n.t('hero_cta_browse'))}</a>
             <a href="${ctaHref}" class="btn btn-secondary btn-lg">${esc(ctaLabel)}</a>
           </div>
+          ${hasStats ? `
           <div class="hero-stats">
             <div class="hero-stat">
               <div class="hero-stat-value" data-count-to="${completedDeals}" data-format="number">0</div>
@@ -279,7 +281,10 @@
               <div class="hero-stat-value" data-count-to="${activeListings}" data-format="number">0</div>
               <div class="hero-stat-label">Active Listings</div>
             </div>
-          </div>
+          </div>` : `
+          <div class="hero-launch-note">
+            <p>Join the first wave of verified EU oil traders &mdash; registration is open</p>
+          </div>`}
         </div>
       </section>
 
@@ -315,7 +320,7 @@
               </div>
             </div>
             <div class="trust-badge">
-              <div class="trust-badge-icon">&#127468;&#127473;</div>
+              <div class="trust-badge-icon">&#127466;&#127482;</div>
               <div class="trust-badge-text">
                 <div class="trust-badge-title">EU Registered Technology Platform</div>
                 <div class="trust-badge-sub">Compliance-first by design</div>

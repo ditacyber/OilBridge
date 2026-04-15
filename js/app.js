@@ -26,7 +26,7 @@
 
   // === SEO: Dynamic per-page meta ===
   function setPageMeta(title, description) {
-    const fullTitle = title ? title + ' | OilBridge' : "OilBridge — Europe's Trusted Oil Marketplace";
+    const fullTitle = title ? title + ' | OilBridge' : 'OilBridge — Dealflow & Compliance Platform for European Oil Trading';
     document.title = fullTitle;
     const descMeta = document.querySelector('meta[name="description"]');
     if (descMeta) descMeta.setAttribute('content', description || '');
@@ -205,7 +205,7 @@
   // PAGE: Home
   // ============================================================
   async function renderHome(main) {
-    setPageMeta(null, "Europe's leading B2B oil marketplace. Buy and sell crude oil, diesel, gasoline, jet fuel, LNG, and petrochemicals with KYC-verified traders across 27 EU countries.");
+    setPageMeta(null, 'OilBridge is a dealflow and compliance platform for European oil trading. Manage deals, verify counterparties with Stripe Identity, and stay compliant — all in one secure platform.');
     const [publicStats, listings] = await Promise.all([
       store.getPublicStats(),
       store.getListings({ limit: 6 })
@@ -216,15 +216,12 @@
     const activeListings = publicStats.activeListings || listings.length || 0;
     const totalVolumeEur = publicStats.totalVolumeEur || 0;
 
-    // Primary CTA routes based on login state:
-    //   not logged in      → register
-    //   logged in, verified → place a listing
-    //   logged in, pending  → profile (to complete KYC)
+    // Primary CTA routes based on login state
     const homeUser = store.getCurrentUser();
     let ctaHref, ctaLabel;
     if (!homeUser) {
       ctaHref = '#register';
-      ctaLabel = i18n.t('hero_cta_register');
+      ctaLabel = 'Start Trading';
     } else if (store.isVerified()) {
       ctaHref = '#place-listing';
       ctaLabel = i18n.t('nav_place_listing');
@@ -233,13 +230,36 @@
       ctaLabel = 'Complete Verification';
     }
 
+    // FAQ content reused for both the visible section and the JSON-LD.
+    const FAQ = [
+      { q: 'Is OilBridge a broker?',
+        a: 'No. OilBridge is a technology platform. We never own, buy or sell oil. We provide the tools that verified European traders use to manage their own deals.' },
+      { q: 'How is my data protected?',
+        a: 'All data is encrypted in transit and at rest. We are GDPR compliant and never share personal contact details with counterparties.' },
+      { q: 'What is the platform fee?',
+        a: 'A fixed 3.2% platform fee per successful deal. No hidden costs, no subscription, no listing fees.' },
+      { q: 'Who can use OilBridge?',
+        a: 'Verified EU-registered companies only. All users must pass KYC verification via Stripe Identity before gaining access.' },
+      { q: 'What if a deal goes wrong?',
+        a: 'Every match creates a permanent evidence record including frozen listing details, counterparty snapshots and the complete chat transcript for dispute resolution.' }
+    ];
+    const faqJsonLd = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: FAQ.map(f => ({
+        '@type': 'Question',
+        name: f.q,
+        acceptedAnswer: { '@type': 'Answer', text: f.a }
+      }))
+    });
+
     main.innerHTML = `
       <section class="hero">
         <div class="hero-content">
-          <h1><span data-i18n="hero_title_1">${esc(i18n.t('hero_title_1'))}</span><br>${esc(i18n.t('hero_title_2'))}</h1>
-          <p data-i18n="hero_subtitle">${esc(i18n.t('hero_subtitle'))}</p>
+          <h1>Dealflow &amp; Compliance Platform<br>for European Oil Trading</h1>
+          <p>OilBridge enables oil traders to manage deals, verify counterparties and stay compliant — all in one secure platform.</p>
           <div class="hero-actions">
-            <a href="#listings" class="btn btn-primary btn-lg" data-i18n="hero_cta_browse">${esc(i18n.t('hero_cta_browse'))}</a>
+            <a href="#listings" class="btn btn-primary btn-lg">${esc(i18n.t('hero_cta_browse'))}</a>
             <a href="${ctaHref}" class="btn btn-secondary btn-lg">${esc(ctaLabel)}</a>
           </div>
           <div class="hero-stats">
@@ -257,7 +277,7 @@
             </div>
             <div class="hero-stat">
               <div class="hero-stat-value" data-count-to="${activeListings}" data-format="number">0</div>
-              <div class="hero-stat-label" data-i18n="hero_stat_listings">${esc(i18n.t('hero_stat_listings'))}</div>
+              <div class="hero-stat-label">Active Listings</div>
             </div>
           </div>
         </div>
@@ -267,24 +287,24 @@
         <div class="container">
           <div class="trust-badges">
             <div class="trust-badge">
-              <div class="trust-badge-icon">&#128737;</div>
-              <div class="trust-badge-text">
-                <div class="trust-badge-title">KYC Verified Traders</div>
-                <div class="trust-badge-sub">Identity checked &amp; approved</div>
-              </div>
-            </div>
-            <div class="trust-badge">
               <div class="trust-badge-icon">&#128274;</div>
               <div class="trust-badge-text">
                 <div class="trust-badge-title">SSL Secured</div>
-                <div class="trust-badge-sub">End-to-end encryption</div>
+                <div class="trust-badge-sub">End-to-end HTTPS encryption</div>
               </div>
             </div>
             <div class="trust-badge">
-              <div class="trust-badge-icon">&#127466;&#127482;</div>
+              <div class="trust-badge-icon">&#128737;</div>
               <div class="trust-badge-text">
-                <div class="trust-badge-title">EU Compliant</div>
-                <div class="trust-badge-sub">GDPR &amp; NDA protected</div>
+                <div class="trust-badge-title">KYC Verified Traders Only</div>
+                <div class="trust-badge-sub">Stripe Identity verification</div>
+              </div>
+            </div>
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#128273;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">GDPR Compliant</div>
+                <div class="trust-badge-sub">EU data protection standards</div>
               </div>
             </div>
             <div class="trust-badge">
@@ -294,6 +314,20 @@
                 <div class="trust-badge-sub">PCI-DSS compliant</div>
               </div>
             </div>
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#127468;&#127473;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">EU Registered Technology Platform</div>
+                <div class="trust-badge-sub">Compliance-first by design</div>
+              </div>
+            </div>
+            <div class="trust-badge">
+              <div class="trust-badge-icon">&#128683;</div>
+              <div class="trust-badge-text">
+                <div class="trust-badge-title">Sanctioned Countries Blocked</div>
+                <div class="trust-badge-sub">Automated EU sanctions screening</div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -301,23 +335,71 @@
       <section class="page-section">
         <div class="container">
           <div class="section-header text-center">
-            <h2 data-i18n="features_title">${esc(i18n.t('features_title'))}</h2>
-            <p data-i18n="features_subtitle">${esc(i18n.t('features_subtitle'))}</p>
+            <h2>Platform Features</h2>
+            <p>Built for the European oil industry — compliance, transparency and evidence at every step.</p>
           </div>
           <div class="features-grid">
-            <div class="feature-card"><div class="feature-card-icon">&#128274;</div><h3 data-i18n="feature_kyc_title">${esc(i18n.t('feature_kyc_title'))}</h3><p data-i18n="feature_kyc_desc">${esc(i18n.t('feature_kyc_desc'))}</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#9889;</div><h3 data-i18n="feature_match_title">${esc(i18n.t('feature_match_title'))}</h3><p data-i18n="feature_match_desc">${esc(i18n.t('feature_match_desc'))}</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#128737;</div><h3 data-i18n="feature_secure_title">${esc(i18n.t('feature_secure_title'))}</h3><p data-i18n="feature_secure_desc">${esc(i18n.t('feature_secure_desc'))}</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#128176;</div><h3 data-i18n="feature_commission_title">${esc(i18n.t('feature_commission_title'))}</h3><p data-i18n="feature_commission_desc">${esc(i18n.t('feature_commission_desc'))}</p></div>
+            <div class="feature-card"><div class="feature-card-icon">&#128202;</div><h3>Deal Pipeline Management</h3><p>Track every deal from listing to completion in one place. Structured states: pending, accepted, completed.</p></div>
+            <div class="feature-card"><div class="feature-card-icon">&#9989;</div><h3>KYC &amp; Counterparty Verification</h3><p>Every trader completes Stripe Identity verification (document + liveness selfie) before gaining market access.</p></div>
+            <div class="feature-card"><div class="feature-card-icon">&#128274;</div><h3>Secure Communication Channel</h3><p>Counterparties communicate only through OilBridge. No emails, phone numbers or direct contact details are ever shared.</p></div>
+            <div class="feature-card"><div class="feature-card-icon">&#128683;</div><h3>Automated EU Sanctions Screening</h3><p>Registrations from sanctioned jurisdictions (Russia, Belarus, Iran, North Korea, Syria, Cuba) are automatically blocked.</p></div>
+            <div class="feature-card"><div class="feature-card-icon">&#128196;</div><h3>Evidence-based Dispute Protection</h3><p>Every match creates a permanent snapshot — frozen listing, parties, terms and chat history — for dispute resolution.</p></div>
+            <div class="feature-card"><div class="feature-card-icon">&#128273;</div><h3>GDPR Compliant Data Processing</h3><p>Full EU data-protection standards. Personal contact details are never revealed between counterparties, even after payment.</p></div>
           </div>
         </div>
+      </section>
+
+      <section class="page-section how-it-works-section" style="background:var(--bg-secondary)">
+        <div class="container">
+          <div class="section-header text-center">
+            <h2>How OilBridge Works</h2>
+            <p>A compliant, streamlined workflow for European oil trading.</p>
+          </div>
+          <div class="steps-grid">
+            <div class="step-card">
+              <div class="step-card-number">1</div>
+              <h3>Register &amp; Verify</h3>
+              <p>Create your account and complete KYC identity verification via Stripe Identity. Only verified EU companies can access listings.</p>
+            </div>
+            <div class="step-card">
+              <div class="step-card-number">2</div>
+              <h3>Post or Browse</h3>
+              <p>List the oil you want to buy or sell, or browse listings from other verified traders across the EU.</p>
+            </div>
+            <div class="step-card">
+              <div class="step-card-number">3</div>
+              <h3>Match &amp; Chat</h3>
+              <p>When a compatible match is found, both parties can communicate securely via the OilBridge chat. Contact details are never exchanged.</p>
+            </div>
+            <div class="step-card">
+              <div class="step-card-number">4</div>
+              <h3>Pay &amp; Complete</h3>
+              <p>Pay the 3.2% platform fee via Stripe. The deal is confirmed and a permanent evidence record is stored for both parties.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page-section faq-section">
+        <div class="container" style="max-width:820px">
+          <div class="section-header text-center">
+            <h2>Frequently Asked Questions</h2>
+          </div>
+          ${FAQ.map(f => `
+            <details class="faq-item">
+              <summary>${esc(f.q)}</summary>
+              <p>${esc(f.a)}</p>
+            </details>
+          `).join('')}
+        </div>
+        <script type="application/ld+json">${faqJsonLd}<\/script>
       </section>
 
       ${listings.length ? `
       <section class="page-section" style="background:var(--bg-secondary)">
         <div class="container">
           <div class="section-header flex-between">
-            <div><h2 data-i18n="listings_title">${esc(i18n.t('listings_title'))}</h2><p data-i18n="listings_subtitle">${esc(i18n.t('listings_subtitle'))}</p></div>
+            <div><h2>Latest Listings</h2><p>Recent buy and sell orders from verified European traders.</p></div>
             <a href="#listings" class="btn btn-secondary">${esc(i18n.t('hero_cta_browse'))} &rarr;</a>
           </div>
           <div class="listings-grid">${listings.map(l => renderListingCard(l)).join('')}</div>
@@ -526,7 +608,7 @@
   // ============================================================
   function renderLogin(main) {
     if (store.isLoggedIn()) { navigate('home'); return; }
-    setPageMeta('Login', 'Sign in to your OilBridge account to access the EU oil marketplace, manage listings, and view trade matches.');
+    setPageMeta('Login', 'Sign in to your OilBridge account to access the dealflow and compliance platform for European oil trading.');
     main.innerHTML = `
       <div class="auth-page">
         <div class="auth-card">
@@ -572,7 +654,7 @@
   // ============================================================
   function renderRegister(main) {
     if (store.isLoggedIn()) { navigate('home'); return; }
-    setPageMeta('Register — Join the EU Oil Marketplace', 'Create your OilBridge account to start trading oil across Europe. KYC verification, NDA protection, and 3.2% transparent commission on completed trades.');
+    setPageMeta('Register — Join OilBridge', 'Create your OilBridge account. Stripe Identity verification, NDA protection, and a transparent 3.2% platform fee on completed deals.');
     const steps = ['register_step_company','register_step_contact','register_step_nda','register_step_password'];
     let currentStep = 0;
     let formData = {};
@@ -740,7 +822,7 @@
   // PAGE: Place Listing
   // ============================================================
   function renderPlaceListing(main) {
-    setPageMeta('Place a Listing', 'Create a buy or sell order for crude oil, diesel, gasoline, jet fuel, LNG, or other petroleum products on the OilBridge marketplace.');
+    setPageMeta('Place a Listing', 'Create a buy or sell order for crude oil, diesel, gasoline, jet fuel, LNG, or other petroleum products on the OilBridge platform.');
     const user = store.getCurrentUser();
     if (!user) { navigate('login'); return; }
     if (!store.isVerified()) {
@@ -1009,7 +1091,7 @@
               <div>${kycBadge}</div>
             </div>
             ${user.kycStatus === 'verified' ? `
-              <p style="color:var(--text-secondary);font-size:0.9rem">Your identity has been verified. You have full access to the marketplace.</p>
+              <p style="color:var(--text-secondary);font-size:0.9rem">Your identity has been verified. You have full access to the platform.</p>
             ` : user.kycStatus === 'rejected' ? `
               <p style="color:var(--text-secondary);font-size:0.9rem;margin-bottom:16px">Your last verification attempt was unsuccessful. You can try again — make sure your ID photo is clear and you are clearly holding the ID in your selfie.</p>
               <button class="btn btn-primary" id="profile-kyc-start-btn">Retry Identity Verification</button>
@@ -1514,8 +1596,8 @@
       if (state === 'verified') {
         iconHtml = '<div style="font-size:4rem;margin-bottom:16px">&#9989;</div>';
         title = 'Identity Verified!';
-        body = 'Your identity has been confirmed by Stripe. You now have full access to the OilBridge marketplace.';
-        actions = `<a href="#home" class="btn btn-primary">Continue to Marketplace</a>
+        body = 'Your identity has been confirmed by Stripe. You now have full access to the OilBridge platform.';
+        actions = `<a href="#home" class="btn btn-primary">Continue to Platform</a>
                    <a href="#listings" class="btn btn-secondary">Browse Listings</a>`;
       } else if (state === 'rejected') {
         iconHtml = '<div style="font-size:4rem;margin-bottom:16px">&#10060;</div>';
@@ -2056,20 +2138,20 @@
   // PAGE: Terms / Privacy
   // ============================================================
   function renderTerms(main) {
-    setPageMeta('Terms of Service', 'OilBridge terms of service governing the use of the EU oil trading marketplace, commission structure, and liability.');
+    setPageMeta('Terms of Service', 'OilBridge terms of service governing use of the technology platform, platform-fee structure, and liability.');
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
       <h2 class="mb-24">Terms of Service</h2>
       <div class="card" style="line-height:1.8;color:var(--text-secondary)">
         <h3>1. Acceptance of Terms</h3><p>By accessing and using the OilBridge platform, you agree to these terms of service.</p>
-        <h3 class="mt-24">2. Platform Usage</h3><p>OilBridge provides a marketplace for verified traders to list and match oil trading opportunities. All users must complete KYC verification before trading.</p>
-        <h3 class="mt-24">3. Commission</h3><p>A commission of 3.2% is charged on all successfully completed transactions facilitated through the platform.</p>
-        <h3 class="mt-24">4. Liability</h3><p>OilBridge acts solely as an intermediary platform. We do not take ownership of traded commodities and are not liable for the quality, delivery, or performance of trades.</p>
+        <h3 class="mt-24">2. Platform Usage</h3><p>OilBridge is a technology platform that enables verified EU-registered companies to manage their own oil deals. OilBridge does not act as a broker and does not buy, sell or take custody of any commodity. All users must complete KYC verification via Stripe Identity before listings become visible to them.</p>
+        <h3 class="mt-24">3. Platform Fee</h3><p>A fixed platform fee of 3.2% is charged per successfully completed deal. There are no subscription fees, listing fees, or other hidden costs.</p>
+        <h3 class="mt-24">4. Liability</h3><p>OilBridge provides software tools only. We do not own, transport, inspect or deliver any commodity, and we are not liable for the quality, delivery, or performance of any deal arranged between users of the platform.</p>
         <h3 class="mt-24">5. Governing Law</h3><p>These terms are governed by the laws of the Netherlands and the European Union.</p>
       </div></div></section>`;
   }
 
   function renderPrivacy(main) {
-    setPageMeta('Privacy Policy', 'OilBridge privacy policy detailing data collection, GDPR compliance, and how we protect your information on the oil trading platform.');
+    setPageMeta('Privacy Policy', 'OilBridge privacy policy detailing data collection, GDPR compliance, and how we protect your information on our technology platform.');
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
       <h2 class="mb-24">Privacy Policy</h2>
       <div class="card" style="line-height:1.8;color:var(--text-secondary)">

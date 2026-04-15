@@ -186,7 +186,7 @@ async function sendKycResultEmail(user, status, reason) {
     html = `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
       <h2 style="color:#c8860a">Welcome to OilBridge!</h2>
       <p>Hi ${user.contact_name},</p>
-      <p>Great news — your KYC verification has been <strong>approved</strong>. You now have full access to the OilBridge marketplace and can start placing buy and sell listings immediately.</p>
+      <p>Great news — your KYC verification has been <strong>approved</strong>. You now have full access to the OilBridge platform and can start placing buy and sell listings immediately.</p>
       <p style="background:#f5f5f4;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555">${reason}</p>
       <p style="margin-top:24px"><a href="https://www.oilbridge.eu" style="background:#c8860a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Sign In to OilBridge</a></p>
       <p style="font-size:0.85rem;color:#888;margin-top:32px">— The OilBridge team</p>

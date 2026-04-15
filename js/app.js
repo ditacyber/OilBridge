@@ -537,7 +537,10 @@
   // ============================================================
   async function renderListingDetail(main, listingId) {
     setPageMeta('Listing Details', 'View oil listing details including quantity, price, delivery location, and commission breakdown.');
-    const listing = await store.getListing(listingId);
+    const [listing, stats] = await Promise.all([
+      store.getListing(listingId),
+      store.getPublicStats().catch(() => ({}))
+    ]);
     if (!listing || listing.error) {
       main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><h3>Listing not found</h3><a href="#listings" class="btn btn-primary">Back to Listings</a></div></div></div>`;
       return;
@@ -545,6 +548,8 @@
     const seller = listing.seller;
     const user = store.getCurrentUser();
     const isOwn = user && user.id === listing.userId;
+    const currentRate = stats.commissionRate || 0.032;
+    const isEarly = stats.earlyAdopterActive === true;
 
     let actionBtn = '';
     if (!user) actionBtn = `<a href="#login" class="btn btn-primary btn-block" data-i18n="listing_login_required">${esc(i18n.t('listing_login_required'))}</a>`;
@@ -582,7 +587,11 @@
                   <div style="font-size:1.2rem;font-weight:700;margin-top:4px">${formatCurrency(listing.price * listing.quantity, listing.currency)}</div>
                 </div>
                 <div class="commission-banner" style="margin-bottom:20px">
-                  <div class="commission-banner-text"><strong>${esc(i18n.t('match_commission'))}</strong><br>${formatCurrency(listing.price * listing.quantity * 0.032, listing.currency)}</div>
+                  <div class="commission-banner-text">
+                    <strong>Commission (${(currentRate * 100).toFixed(isEarly ? 0 : 1)}%)${isEarly ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</strong><br>
+                    ${formatCurrency(listing.price * listing.quantity * currentRate, listing.currency)}
+                    ${isEarly && stats.earlyAdopterSlotsLeft != null ? `<div style="font-size:0.75rem;margin-top:4px;color:var(--text-muted)">${stats.earlyAdopterSlotsLeft} early-adopter slots left</div>` : ''}
+                  </div>
                 </div>
                 ${actionBtn}
                 ${seller ? `<div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)"><div class="match-detail-label" data-i18n="listing_posted_by">${esc(i18n.t('listing_posted_by'))}</div><div style="font-weight:600;margin-top:4px">${esc(seller.companyName)}</div><div class="text-muted" style="font-size:0.85rem">${esc(seller.companyCountry)}</div></div>` : ''}
@@ -991,7 +1000,7 @@
             <div class="match-detail"><div class="match-detail-label">${esc(i18n.t('listing_quantity'))}</div><div class="match-detail-value">${match.quantity.toLocaleString()} ${listing ? esc(i18n.t(listing.unit)) : ''}</div></div>
             <div class="match-detail"><div class="match-detail-label">${esc(i18n.t('listing_price'))}</div><div class="match-detail-value">${formatCurrency(match.pricePerUnit, match.currency)} ${esc(i18n.t('general_per_unit'))}</div></div>
             <div class="match-detail"><div class="match-detail-label" data-i18n="match_total">${esc(i18n.t('match_total'))}</div><div class="match-detail-value">${formatCurrency(match.totalValue, match.currency)}</div></div>
-            <div class="match-detail"><div class="match-detail-label" data-i18n="match_commission">${esc(i18n.t('match_commission'))}</div><div class="match-detail-value text-accent">${formatCurrency(match.commission, match.currency)}</div></div>
+            <div class="match-detail"><div class="match-detail-label">Commission (${((match.commissionRate ?? 0.032) * 100).toFixed(match.commissionRate === 0.02 ? 0 : 1)}%)${match.commissionRate === 0.02 ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</div><div class="match-detail-value text-accent">${formatCurrency(match.commission, match.currency)}</div></div>
           </div>
 
           ${isAccepted && counterparty ? `

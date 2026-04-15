@@ -23,6 +23,8 @@ process.on('unhandledRejection', (reason) => {
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'oilbridge.db');
 const COMMISSION_RATE = 0.032;
+const EARLY_ADOPTER_RATE = 0.02;
+const EARLY_ADOPTER_LIMIT = 50;
 const PORT = process.env.PORT || 3000;
 
 const stripe = process.env.STRIPE_SECRET_KEY
@@ -135,11 +137,23 @@ function toMatch(row) {
   return {
     id: row.id, listingId: row.listing_id, buyerId: row.buyer_id, sellerId: row.seller_id,
     status: row.status, quantity: row.quantity, pricePerUnit: row.price_per_unit,
-    totalValue: row.total_value, commission: row.commission, currency: row.currency,
+    totalValue: row.total_value, commission: row.commission,
+    commissionRate: row.commission_rate != null ? row.commission_rate : COMMISSION_RATE,
+    currency: row.currency,
     commissionPaid: !!row.commission_paid, stripeSessionId: row.stripe_session_id || null,
     hasEvidence: !!evidence,
     createdAt: row.created_at
   };
+}
+
+// Early-adopter pricing: first EARLY_ADOPTER_LIMIT completed deals pay the
+// reduced rate. Once that threshold is crossed, new matches use the standard
+// rate. The rate is locked in at match creation so users keep the price they
+// were quoted.
+function getCurrentCommissionRate() {
+  const row = queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND commission_paid = 1");
+  const completedCount = (row && row.c) || 0;
+  return completedCount < EARLY_ADOPTER_LIMIT ? EARLY_ADOPTER_RATE : COMMISSION_RATE;
 }
 
 function enrichListing(row) {
@@ -324,11 +338,12 @@ function checkForMatches(newListing) {
       if (!existing) {
         const qty = Math.min(buy.quantity, sell.quantity);
         const total = qty * sell.price;
+        const rate = getCurrentCommissionRate();
         const evidence = buildMatchEvidence(sell, buy.user_id, sell.user_id, qty, sell.price);
         run(
-          `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, currency, created_at, evidence)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
-          [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, total * COMMISSION_RATE, sell.currency, new Date().toISOString(), JSON.stringify(evidence)]
+          `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, commission_rate, currency, created_at, evidence)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, total * rate, rate, sell.currency, new Date().toISOString(), JSON.stringify(evidence)]
         );
       }
     }
@@ -386,6 +401,9 @@ function initDatabase() {
 
   // Migrate: add chargeback-evidence column to matches (listing + parties snapshot)
   try { db.run('ALTER TABLE matches ADD COLUMN evidence TEXT'); } catch(e) {}
+
+  // Migrate: add commission rate (for early-adopter pricing)
+  try { db.run('ALTER TABLE matches ADD COLUMN commission_rate REAL'); } catch(e) {}
 
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
@@ -778,10 +796,11 @@ function createApp() {
       return res.status(409).json({ error: 'Match already exists' });
     }
     const total = listing.quantity * listing.price;
+    const rate = getCurrentCommissionRate();
     const evidence = buildMatchEvidence(listing, buyerId, sellerId, listing.quantity, listing.price);
     run(
-      "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,currency,created_at,evidence) VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?)",
-      [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, total*COMMISSION_RATE, listing.currency, new Date().toISOString(), JSON.stringify(evidence)]
+      "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,commission_rate,currency,created_at,evidence) VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?,?)",
+      [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, total*rate, rate, listing.currency, new Date().toISOString(), JSON.stringify(evidence)]
     );
     res.status(201).json({ success: true });
   });
@@ -1007,6 +1026,9 @@ function createApp() {
 
     try {
       const baseUrl = `${req.protocol}://${req.get('host')}`;
+      const matchRate = match.commission_rate != null ? match.commission_rate : COMMISSION_RATE;
+      const ratePct = (matchRate * 100).toFixed(matchRate === EARLY_ADOPTER_RATE ? 0 : 1);
+      const isEarly = matchRate === EARLY_ADOPTER_RATE;
       const session = await stripe.checkout.sessions.create({
         mode: 'payment',
         payment_method_types: ['card'],
@@ -1014,7 +1036,7 @@ function createApp() {
           price_data: {
             currency: match.currency.toLowerCase(),
             product_data: {
-              name: 'OilBridge Trade Commission (3.2%)',
+              name: `OilBridge Trade Commission (${ratePct}%${isEarly ? ' — Early Adopter Rate' : ''})`,
               description: `Commission for match ${match.id} — ${match.quantity.toLocaleString()} units at ${match.price_per_unit} ${match.currency}/unit`,
             },
             unit_amount: Math.round(match.commission * 100),
@@ -1232,7 +1254,17 @@ function createApp() {
       const totalVolumeEur = completedMatches.reduce((sum, m) =>
         sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0
       );
-      res.json({ completedDeals, verifiedTraders, activeListings, totalVolumeEur: Math.round(totalVolumeEur) });
+      const currentRate = getCurrentCommissionRate();
+      res.json({
+        completedDeals, verifiedTraders, activeListings,
+        totalVolumeEur: Math.round(totalVolumeEur),
+        commissionRate: currentRate,
+        earlyAdopterRate: EARLY_ADOPTER_RATE,
+        standardRate: COMMISSION_RATE,
+        earlyAdopterLimit: EARLY_ADOPTER_LIMIT,
+        earlyAdopterSlotsLeft: Math.max(0, EARLY_ADOPTER_LIMIT - completedDeals),
+        earlyAdopterActive: currentRate === EARLY_ADOPTER_RATE
+      });
     } catch (err) {
       console.error('[public-stats]', err.message);
       res.json({ completedDeals: 0, verifiedTraders: 0, activeListings: 0, totalVolumeEur: 0 });

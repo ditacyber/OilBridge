@@ -1,0 +1,6 @@
+# One email address per line. Lines starting with # are ignored.
+# Copy to recipients.txt and fill in real addresses (recipients.txt is gitignored).
+
+contact@oilprice.com
+tips@energymonitor.ai
+contact@argusmedia.com

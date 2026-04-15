@@ -9,3 +9,8 @@ data/
 .env.*.local
 *.env
 !.env.example
+
+# Bulk email recipient lists — keep contact data out of git
+recipients.txt
+recipients.*.txt
+!recipients.txt.example

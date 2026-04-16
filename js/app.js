@@ -258,20 +258,11 @@
     main.innerHTML = `
       <section class="hero">
         <div class="hero-content">
-          <h1>Dealflow &amp; Compliance Platform<br>for European Oil Trading</h1>
-          <p>OilBridge helps EU oil traders find serious counterparties faster &mdash; with less wasted time and better pre-screening than brokers.</p>
+          <h1>Find verified oil trading counterparties in Europe &mdash; without wasting time on unqualified deals</h1>
+          <p>OilBridge connects serious EU oil traders and brokers with pre-screened partners and structured dealflow.</p>
           <div class="hero-actions">
             <a href="#listings" class="btn btn-primary btn-lg">${esc(i18n.t('hero_cta_browse'))}</a>
             <a href="${ctaHref}" class="btn btn-secondary btn-lg">${esc(ctaLabel)}</a>
-          </div>
-          <div class="hero-audience">
-            <p class="hero-audience-label">Built for:</p>
-            <div class="hero-audience-tags">
-              <span class="hero-audience-tag">Small &amp; mid-size EU oil traders</span>
-              <span class="hero-audience-tag">Petroleum product brokers</span>
-              <span class="hero-audience-tag">Fuel import/export companies</span>
-              <span class="hero-audience-tag">Companies with surplus oil stock</span>
-            </div>
           </div>
           ${hasStats ? `
           <div class="hero-stats">
@@ -295,6 +286,96 @@
           <div class="hero-launch-note">
             <p>Join the first wave of verified EU oil traders &mdash; registration is open</p>
           </div>`}
+        </div>
+      </section>
+
+      <section class="page-section why-section">
+        <div class="container">
+          <div class="section-header text-center">
+            <h2>Why traders use OilBridge</h2>
+            <p>We solve the problems that cost oil traders the most time and money.</p>
+          </div>
+          <div class="why-grid">
+            <div class="why-card">
+              <div class="why-card-icon">&#128683;</div>
+              <h3>No more fake mandates</h3>
+              <p>Stop wasting weeks on intermediaries who don't have product. Every user on OilBridge is a verified, registered EU company.</p>
+            </div>
+            <div class="why-card">
+              <div class="why-card-icon">&#128737;</div>
+              <h3>Verified counterparties only</h3>
+              <p>Every trader completes Stripe Identity verification — document check plus live selfie — before they can post or respond to any listing.</p>
+            </div>
+            <div class="why-card">
+              <div class="why-card-icon">&#9889;</div>
+              <h3>Faster deal introductions</h3>
+              <p>Post what you want to buy or sell. Get matched with compatible counterparties automatically. No brokers, no waiting.</p>
+            </div>
+            <div class="why-card">
+              <div class="why-card-icon">&#127466;&#127482;</div>
+              <h3>EU-focused private network</h3>
+              <p>All 27 member states, 6 languages, built-in sanctions screening. Sanctioned jurisdictions are blocked at the door.</p>
+            </div>
+            <div class="why-card">
+              <div class="why-card-icon">&#128196;</div>
+              <h3>Structured dealflow with full documentation</h3>
+              <p>Every deal is documented from first contact to completion — timestamps, chat history, and frozen evidence for dispute resolution.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page-section how-it-works-section" style="background:var(--bg-secondary)">
+        <div class="container">
+          <div class="section-header text-center">
+            <h2>Get started in 3 steps</h2>
+            <p>From application to your first deal — straightforward and fast.</p>
+          </div>
+          <div class="steps-grid steps-grid-3">
+            <div class="step-card">
+              <div class="step-card-number">1</div>
+              <h3>Apply for access</h3>
+              <p>Register your EU-registered company. Submit your business details and accept the NDA. Takes about 3 minutes.</p>
+            </div>
+            <div class="step-card">
+              <div class="step-card-number">2</div>
+              <h3>Get KYC verified</h3>
+              <p>Complete identity verification through Stripe Identity — a quick document scan and live selfie. Approved in minutes, not weeks.</p>
+            </div>
+            <div class="step-card">
+              <div class="step-card-number">3</div>
+              <h3>Connect and trade</h3>
+              <p>Browse listings, post your own, and get matched with verified counterparties. Communicate securely and close deals on the platform.</p>
+            </div>
+          </div>
+          <div style="text-align:center;margin-top:32px">
+            <a href="${ctaHref}" class="btn btn-primary btn-lg">${esc(ctaLabel)}</a>
+          </div>
+        </div>
+      </section>
+
+      <section class="page-section built-for-section">
+        <div class="container">
+          <div class="section-header text-center">
+            <h2>Built for</h2>
+          </div>
+          <div class="built-for-grid">
+            <div class="built-for-card">
+              <div class="built-for-icon">&#128717;</div>
+              <h3>European oil traders &amp; brokers</h3>
+              <p>Independent traders and brokers looking for verified buy and sell counterparties across the EU without relying on personal networks alone.</p>
+            </div>
+            <div class="built-for-card">
+              <div class="built-for-icon">&#128230;</div>
+              <h3>Petroleum product suppliers</h3>
+              <p>Refineries, storage operators, and distributors looking to reach a wider pool of pre-screened European buyers for crude, diesel, jet fuel, and fuel oil.</p>
+            </div>
+            <div class="built-for-card">
+              <div class="built-for-icon">&#128674;</div>
+              <h3>Fuel import/export companies</h3>
+              <p>Import and export firms that need fast introductions to verified partners across EU borders, with built-in compliance documentation.</p>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -342,54 +423,6 @@
                 <div class="trust-badge-title">Sanctioned Countries Blocked</div>
                 <div class="trust-badge-sub">Automated EU sanctions screening</div>
               </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="page-section">
-        <div class="container">
-          <div class="section-header text-center">
-            <h2>Platform Features</h2>
-            <p>Built for the European oil industry — compliance, transparency and evidence at every step.</p>
-          </div>
-          <div class="features-grid">
-            <div class="feature-card"><div class="feature-card-icon">&#128202;</div><h3>Deal Pipeline Management</h3><p>Track every deal from listing to completion in one place. Structured states: pending, accepted, completed.</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#9989;</div><h3>KYC &amp; Counterparty Verification</h3><p>Every trader completes Stripe Identity verification (document + liveness selfie) before gaining market access.</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#128274;</div><h3>Secure Communication Channel</h3><p>Counterparties communicate only through OilBridge. No emails, phone numbers or direct contact details are ever shared.</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#128683;</div><h3>Automated EU Sanctions Screening</h3><p>Registrations from sanctioned jurisdictions (Russia, Belarus, Iran, North Korea, Syria, Cuba) are automatically blocked.</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#128196;</div><h3>Evidence-based Dispute Protection</h3><p>Every match creates a permanent snapshot — frozen listing, parties, terms and chat history — for dispute resolution.</p></div>
-            <div class="feature-card"><div class="feature-card-icon">&#128273;</div><h3>GDPR Compliant Data Processing</h3><p>Full EU data-protection standards. Personal contact details are never revealed between counterparties, even after payment.</p></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="page-section how-it-works-section" style="background:var(--bg-secondary)">
-        <div class="container">
-          <div class="section-header text-center">
-            <h2>How OilBridge Works</h2>
-            <p>A compliant, streamlined workflow for European oil trading.</p>
-          </div>
-          <div class="steps-grid">
-            <div class="step-card">
-              <div class="step-card-number">1</div>
-              <h3>Register &amp; Verify</h3>
-              <p>Create your account and complete KYC identity verification via Stripe Identity. Only verified EU companies can access listings.</p>
-            </div>
-            <div class="step-card">
-              <div class="step-card-number">2</div>
-              <h3>Post or Browse</h3>
-              <p>List the oil you want to buy or sell, or browse listings from other verified traders across the EU.</p>
-            </div>
-            <div class="step-card">
-              <div class="step-card-number">3</div>
-              <h3>Match &amp; Chat</h3>
-              <p>When a compatible match is found, both parties can communicate securely via the OilBridge chat. Contact details are never exchanged.</p>
-            </div>
-            <div class="step-card">
-              <div class="step-card-number">4</div>
-              <h3>Pay &amp; Complete</h3>
-              <p>Pay the 3.2% platform fee via Stripe. The deal is confirmed and a permanent evidence record is stored for both parties.</p>
             </div>
           </div>
         </div>

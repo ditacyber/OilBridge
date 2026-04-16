@@ -133,6 +133,10 @@ class Store {
   async getAdminChats() { return (await this.api('GET', '/admin/chats')) || []; }
   async getAdminChatMessages(matchId) { return await this.api('GET', '/admin/chats/' + matchId); }
 
+  // --- Blog ---
+  async getBlogPosts() { return (await this.api('GET', '/blog')) || []; }
+  async getBlogPost(slug) { return await this.api('GET', '/blog/' + slug); }
+
   // --- Stats ---
   async getStats() { return (await this.api('GET', '/stats')) || {}; }
   async getPublicStats() { return (await this.api('GET', '/public-stats')) || {}; }

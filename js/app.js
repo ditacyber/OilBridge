@@ -536,15 +536,19 @@
   // PAGE: Listing Detail
   // ============================================================
   async function renderListingDetail(main, listingId) {
-    setPageMeta('Listing Details', 'View oil listing details including quantity, price, delivery location, and commission breakdown.');
     const [listing, stats] = await Promise.all([
       store.getListing(listingId),
       store.getPublicStats().catch(() => ({}))
     ]);
     if (!listing || listing.error) {
+      setPageMeta('Listing Details', 'View oil listing details.');
       main.innerHTML = `<div class="page-section"><div class="container"><div class="empty-state"><h3>Listing not found</h3><a href="#listings" class="btn btn-primary">Back to Listings</a></div></div></div>`;
       return;
     }
+    setPageMeta(
+      `${listing.oilType} — ${listing.quantity.toLocaleString()} ${listing.unit} ${listing.type === 'buy' ? 'Wanted' : 'For Sale'}`,
+      `${listing.oilType}: ${listing.quantity.toLocaleString()} ${listing.unit} at ${listing.price} ${listing.currency}/unit, delivery ${listing.deliveryLocation}. KYC-verified on OilBridge.`
+    );
     const seller = listing.seller;
     const user = store.getCurrentUser();
     const isOwn = user && user.id === listing.userId;
@@ -599,7 +603,24 @@
             </div>
           </div>
         </div>
-      </section>`;
+      </section>
+      <script type="application/ld+json">${JSON.stringify({
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "name": `${listing.oilType} — ${listing.type === 'buy' ? 'Buy' : 'Sell'} Listing`,
+        "description": `${listing.quantity.toLocaleString()} ${listing.unit} of ${listing.oilType}, delivery: ${listing.deliveryLocation}`,
+        "category": "Petroleum Products",
+        "offers": {
+          "@type": "Offer",
+          "priceCurrency": listing.currency,
+          "price": listing.price,
+          "priceValidUntil": listing.deliveryDate,
+          "availability": "https://schema.org/InStock",
+          "seller": seller ? { "@type": "Organization", "name": seller.companyName, "address": { "@type": "PostalAddress", "addressCountry": seller.companyCountry } } : undefined,
+          "areaServed": { "@type": "Place", "name": "European Union" }
+        },
+        "url": "https://oilbridge.eu/#listing/${listing.id}"
+      })}</script>`;
 
     const interestBtn = document.getElementById('express-interest-btn');
     if (interestBtn) {
@@ -2072,16 +2093,27 @@
     }
   ];
 
-  function renderBlog(main, slug) {
+  async function renderBlog(main, slug) {
     if (slug) {
-      const article = BLOG_ARTICLES.find(a => a.slug === slug);
-      if (article) return renderBlogArticle(main, article);
+      const hardcoded = BLOG_ARTICLES.find(a => a.slug === slug);
+      if (hardcoded) return renderBlogArticle(main, hardcoded);
+      const dynamic = await store.getBlogPost(slug);
+      if (dynamic && !dynamic.error) return renderBlogArticle(main, dynamic);
+      main.innerHTML = '<div class="page-section"><div class="container"><div class="empty-state"><h3>Article not found</h3><a href="#blog" class="btn btn-primary">Back to Blog</a></div></div></div>';
+      return;
     }
     return renderBlogIndex(main);
   }
 
-  function renderBlogIndex(main) {
+  async function renderBlogIndex(main) {
     setPageMeta('Blog — Oil Trading Insights & Guides', 'Expert guides on buying and selling oil in Europe, EU marketplace strategies for SMEs, and tips for trading petroleum products across the European Union.');
+    const dynamicPosts = await store.getBlogPosts().catch(() => []);
+    const hardcodedSlugs = new Set(BLOG_ARTICLES.map(a => a.slug));
+    const allArticles = [
+      ...dynamicPosts.filter(p => !hardcodedSlugs.has(p.slug)),
+      ...BLOG_ARTICLES
+    ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
     main.innerHTML = `
       <section class="page-section">
         <div class="container">
@@ -2090,7 +2122,7 @@
             <p>Expert insights, guides, and strategies for trading oil in the European market.</p>
           </div>
           <div class="blog-grid">
-            ${BLOG_ARTICLES.map(a => `
+            ${allArticles.map(a => `
               <div class="blog-card" onclick="window.location.hash='#blog/${a.slug}'">
                 <div class="blog-card-image">${a.icon}</div>
                 <div class="blog-card-body">

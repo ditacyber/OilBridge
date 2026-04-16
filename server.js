@@ -97,6 +97,10 @@ function generateId(prefix) {
   return prefix + '-' + Date.now().toString(36) + crypto.randomBytes(4).toString('hex');
 }
 
+function escXml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ============================================================
 // Row mappers
 // ============================================================
@@ -405,6 +409,23 @@ function initDatabase() {
   // Migrate: add commission rate (for early-adopter pricing)
   try { db.run('ALTER TABLE matches ADD COLUMN commission_rate REAL'); } catch(e) {}
 
+  // Blog posts table (for AI-generated weekly articles)
+  db.run(`CREATE TABLE IF NOT EXISTS blog_posts (
+    id TEXT PRIMARY KEY,
+    slug TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    excerpt TEXT NOT NULL,
+    tag TEXT NOT NULL DEFAULT 'Industry',
+    icon TEXT NOT NULL DEFAULT '&#128218;',
+    body TEXT NOT NULL,
+    meta_title TEXT NOT NULL,
+    meta_description TEXT NOT NULL,
+    read_time TEXT NOT NULL DEFAULT '6 min read',
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL
+  )`);
+  db.run('CREATE INDEX IF NOT EXISTS idx_blog_slug ON blog_posts(slug)');
+
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
   saveDb();
@@ -452,6 +473,152 @@ function syncAdminPassword() {
   if (!verifyPassword(process.env.ADMIN_PASSWORD, admin.password)) {
     run('UPDATE users SET password = ? WHERE id = ?', [hashPassword(process.env.ADMIN_PASSWORD), admin.id]);
     console.log(`[admin] Password rotated from ADMIN_PASSWORD env var (${adminEmail}).`);
+  }
+}
+
+// ============================================================
+// Blog Generation (Claude API)
+// ============================================================
+const BLOG_TOPICS = [
+  'EU oil price trends and market outlook',
+  'Oil trading compliance and regulations in Europe',
+  'Counterparty verification and KYC in commodity trading',
+  'EU sanctions screening for oil traders',
+  'Digital transformation in the European oil industry',
+  'How SMEs can compete in European oil markets',
+  'Risk management in physical oil trading',
+  'EU energy policy and its impact on oil trading',
+  'Sustainable oil trading and ESG compliance in Europe',
+  'Cross-border oil logistics and delivery in the EU'
+];
+
+async function generateBlogPost() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.log('[blog] ANTHROPIC_API_KEY not set — skipping generation.');
+    return null;
+  }
+
+  const existing = queryAll("SELECT slug, title FROM blog_posts ORDER BY created_at DESC LIMIT 20");
+  const existingTitles = existing.map(r => r.title).join(', ');
+  const topic = BLOG_TOPICS[Math.floor(Math.random() * BLOG_TOPICS.length)];
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{
+          role: 'user',
+          content: `Write an SEO blog article for OilBridge (www.oilbridge.eu), a dealflow and compliance platform for European oil trading.
+
+Topic area: ${topic}
+
+IMPORTANT: Do NOT repeat these existing titles: ${existingTitles || 'none yet'}
+
+Return ONLY valid JSON (no markdown code fences) with this exact structure:
+{
+  "slug": "url-friendly-slug",
+  "title": "Article Title Here",
+  "excerpt": "One-sentence summary for the listing page (max 160 chars)",
+  "tag": "Short category (e.g. Market Analysis, Compliance, Guide)",
+  "meta_title": "SEO page title (max 60 chars with — OilBridge suffix)",
+  "meta_description": "SEO meta description (max 155 chars)",
+  "read_time": "X min read",
+  "body": "<p>Full HTML article body...</p>"
+}
+
+Article requirements:
+- 800–1200 words, 4–6 subheadings using <h2> tags
+- Professional, factual tone. No AI cliches.
+- Reference real EU regulations, market data, trading hubs (Rotterdam, ARA)
+- Mention OilBridge naturally 1–2 times as a platform solution
+- End with a <blockquote> CTA linking to #register
+- Use <p>, <ul>, <li>, <strong>, <h2> tags only
+- Current date context: April 2026`
+        }]
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('[blog] Claude API error:', res.status, err);
+      return null;
+    }
+
+    const data = await res.json();
+    const text = data.content && data.content[0] && data.content[0].text;
+    if (!text) { console.error('[blog] Empty Claude response'); return null; }
+
+    const article = JSON.parse(text);
+    if (!article.slug || !article.title || !article.body) {
+      console.error('[blog] Invalid article structure');
+      return null;
+    }
+
+    if (queryOne('SELECT id FROM blog_posts WHERE slug = ?', [article.slug])) {
+      article.slug += '-' + Date.now().toString(36);
+    }
+
+    const id = generateId('blog');
+    run(
+      `INSERT INTO blog_posts (id, slug, title, excerpt, tag, body, meta_title, meta_description, read_time, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?)`,
+      [id, article.slug, article.title, article.excerpt, article.tag || 'Industry',
+       article.body, article.meta_title, article.meta_description,
+       article.read_time || '6 min read', new Date().toISOString()]
+    );
+
+    console.log(`[blog] Published: "${article.title}" (${article.slug})`);
+    pingIndexNow(`${process.env.SITE_URL || 'https://www.oilbridge.eu'}/#blog/${article.slug}`);
+    return article;
+  } catch (err) {
+    console.error('[blog] Generation failed:', err.message);
+    return null;
+  }
+}
+
+function scheduleBlogGeneration() {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log('[blog] ANTHROPIC_API_KEY not set — weekly generation disabled.');
+    return;
+  }
+  console.log('[blog] Weekly blog generation enabled (Mondays at 08:00).');
+  setInterval(() => {
+    const now = new Date();
+    if (now.getUTCDay() === 1 && now.getUTCHours() === 8 && now.getUTCMinutes() === 0) {
+      generateBlogPost().catch(e => console.error('[blog] Scheduled generation failed:', e.message));
+    }
+  }, 60_000).unref();
+}
+
+// ============================================================
+// IndexNow — ping search engines when content changes
+// ============================================================
+const INDEXNOW_KEY = process.env.INDEXNOW_KEY || 'oilbridge-indexnow-' + crypto.randomBytes(8).toString('hex');
+
+async function pingIndexNow(url) {
+  const siteUrl = process.env.SITE_URL || 'https://www.oilbridge.eu';
+  try {
+    const res = await fetch('https://api.indexnow.org/indexnow', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        host: new URL(siteUrl).hostname,
+        key: INDEXNOW_KEY,
+        keyLocation: `${siteUrl}/${INDEXNOW_KEY}.txt`,
+        urlList: [url]
+      })
+    });
+    console.log(`[indexnow] Pinged ${url} — status ${res.status}`);
+  } catch (err) {
+    console.error('[indexnow] Ping failed:', err.message);
   }
 }
 
@@ -757,6 +924,8 @@ function createApp() {
     const listing = queryOne('SELECT * FROM listings WHERE id = ?', [id]);
     checkForMatches(listing);
     res.status(201).json({ success: true, listing: enrichListing(listing) });
+    const siteUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
+    pingIndexNow(`${siteUrl}/#listing/${id}`);
   });
 
   // ========== Match Routes ==========
@@ -1291,9 +1460,86 @@ function createApp() {
     res.status(dbOk ? 200 : 503).json(payload);
   });
 
+  // ========== Blog API Routes ==========
+  app.get('/api/blog', (req, res) => {
+    const rows = queryAll("SELECT id, slug, title, excerpt, tag, icon, meta_title, meta_description, read_time, created_at FROM blog_posts WHERE status = 'published' ORDER BY created_at DESC");
+    res.json(rows.map(r => ({
+      id: r.id, slug: r.slug, title: r.title, excerpt: r.excerpt,
+      tag: r.tag, icon: r.icon || '&#128218;',
+      meta: { title: r.meta_title, description: r.meta_description },
+      readTime: r.read_time, date: r.created_at
+    })));
+  });
+
+  app.get('/api/blog/:slug', (req, res) => {
+    const row = queryOne("SELECT * FROM blog_posts WHERE slug = ? AND status = 'published'", [req.params.slug]);
+    if (!row) return res.status(404).json({ error: 'Article not found' });
+    res.json({
+      id: row.id, slug: row.slug, title: row.title, excerpt: row.excerpt,
+      tag: row.tag, icon: row.icon || '&#128218;', body: row.body,
+      meta: { title: row.meta_title, description: row.meta_description },
+      readTime: row.read_time, date: row.created_at
+    });
+  });
+
+  app.post('/api/blog/generate', auth, adminOnly, ah(async (req, res) => {
+    const article = await generateBlogPost();
+    if (!article) return res.status(500).json({ error: 'Blog generation failed — check ANTHROPIC_API_KEY and server logs' });
+    res.json({ success: true, slug: article.slug, title: article.title });
+  }));
+
+  // ========== RSS Feed ==========
+  app.get('/feed.xml', (req, res) => {
+    const siteUrl = process.env.SITE_URL || 'https://www.oilbridge.eu';
+    const now = new Date().toUTCString();
+
+    const blogPosts = queryAll("SELECT slug, title, excerpt, created_at FROM blog_posts WHERE status = 'published' ORDER BY created_at DESC LIMIT 20");
+    const listings = queryAll("SELECT id, oil_type, quantity, unit, price, currency, delivery_location, created_at FROM listings WHERE status = 'active' ORDER BY created_at DESC LIMIT 20");
+
+    const blogItems = blogPosts.map(p => `    <item>
+      <title>${escXml(p.title)}</title>
+      <link>${siteUrl}/#blog/${escXml(p.slug)}</link>
+      <description>${escXml(p.excerpt)}</description>
+      <pubDate>${new Date(p.created_at).toUTCString()}</pubDate>
+      <guid>${siteUrl}/#blog/${escXml(p.slug)}</guid>
+      <category>Blog</category>
+    </item>`);
+
+    const listingItems = listings.map(l => `    <item>
+      <title>${escXml(l.oil_type)} — ${l.quantity.toLocaleString()} ${escXml(l.unit)} at ${l.price} ${escXml(l.currency)}</title>
+      <link>${siteUrl}/#listing/${escXml(l.id)}</link>
+      <description>${escXml(l.oil_type)} listing: ${l.quantity.toLocaleString()} ${escXml(l.unit)} at ${l.price} ${escXml(l.currency)}/unit, delivery: ${escXml(l.delivery_location)}</description>
+      <pubDate>${new Date(l.created_at).toUTCString()}</pubDate>
+      <guid>${siteUrl}/#listing/${escXml(l.id)}</guid>
+      <category>Listing</category>
+    </item>`);
+
+    const items = [...blogItems, ...listingItems].join('\n');
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>OilBridge — EU Oil Trading Platform</title>
+    <link>${siteUrl}</link>
+    <description>Dealflow and compliance platform for European oil trading. Latest listings, market insights, and compliance guides.</description>
+    <language>en</language>
+    <lastBuildDate>${now}</lastBuildDate>
+    <atom:link href="${siteUrl}/feed.xml" rel="self" type="application/rss+xml"/>
+${items}
+  </channel>
+</rss>`;
+    res.set('Content-Type', 'application/rss+xml; charset=utf-8');
+    res.send(xml);
+  });
+
+  // ========== IndexNow key verification ==========
+  app.get(`/${INDEXNOW_KEY}.txt`, (req, res) => {
+    res.set('Content-Type', 'text/plain');
+    res.send(INDEXNOW_KEY);
+  });
+
   // ========== SEO: sitemap.xml & robots.txt (served inline for reliability) ==========
   const SITE_URL = process.env.SITE_URL || 'https://www.oilbridge.eu';
-  const SITEMAP_URLS = [
+  const SITEMAP_STATIC = [
     { loc: '/',                                changefreq: 'daily',   priority: '1.0' },
     { loc: '/#listings',                       changefreq: 'hourly',  priority: '0.9' },
     { loc: '/#register',                       changefreq: 'monthly', priority: '0.8' },
@@ -1308,7 +1554,16 @@ function createApp() {
 
   app.get('/sitemap.xml', (req, res) => {
     const today = new Date().toISOString().split('T')[0];
-    const urls = SITEMAP_URLS.map(u =>
+    const all = [...SITEMAP_STATIC];
+    queryAll("SELECT slug, created_at FROM blog_posts WHERE status = 'published'").forEach(p => {
+      if (!SITEMAP_STATIC.some(s => s.loc.includes(p.slug))) {
+        all.push({ loc: '/#blog/' + p.slug, changefreq: 'monthly', priority: '0.7' });
+      }
+    });
+    queryAll("SELECT id, created_at FROM listings WHERE status = 'active' ORDER BY created_at DESC LIMIT 100").forEach(l => {
+      all.push({ loc: '/#listing/' + l.id, changefreq: 'weekly', priority: '0.6' });
+    });
+    const urls = all.map(u =>
       `  <url>\n    <loc>${SITE_URL}${u.loc}</loc>\n    <lastmod>${today}</lastmod>\n    <changefreq>${u.changefreq}</changefreq>\n    <priority>${u.priority}</priority>\n  </url>`
     ).join('\n');
     const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
@@ -1317,7 +1572,7 @@ function createApp() {
   });
 
   app.get('/robots.txt', (req, res) => {
-    const txt = `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}/sitemap.xml\n`;
+    const txt = `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}/sitemap.xml\n\n# RSS Feed\n# ${SITE_URL}/feed.xml\n`;
     res.set('Content-Type', 'text/plain; charset=utf-8');
     res.send(txt);
   });
@@ -1494,6 +1749,9 @@ async function sendStartupNotification() {
 
   // Schedule daily backups
   scheduleBackups();
+
+  // Schedule weekly blog generation
+  scheduleBlogGeneration();
 
   const app = createApp();
   app.listen(PORT, '0.0.0.0', () => {

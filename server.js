@@ -428,6 +428,27 @@ function initDatabase() {
 
   const count = queryOne('SELECT COUNT(*) as c FROM users');
   if (count && count.c === 0) seedDatabase();
+
+  // Seed blog articles from JSON if table is empty
+  const blogCount = queryOne('SELECT COUNT(*) as c FROM blog_posts');
+  if (blogCount && blogCount.c === 0) {
+    try {
+      const seedPath = path.join(__dirname, 'blog-seed-data.json');
+      if (fs.existsSync(seedPath)) {
+        const articles = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
+        for (const a of articles) {
+          db.run(
+            `INSERT OR IGNORE INTO blog_posts (id, slug, title, excerpt, tag, icon, body, meta_title, meta_description, read_time, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [a.id, a.slug, a.title, a.excerpt, a.tag, a.icon || '&#128218;', a.body, a.meta_title, a.meta_description, a.read_time, a.status || 'published', a.created_at]
+          );
+        }
+        console.log(`[blog] Seeded ${articles.length} blog articles from blog-seed-data.json`);
+      }
+    } catch (err) {
+      console.error('[blog] Failed to seed blog articles:', err.message);
+    }
+  }
+
   saveDb();
 }
 

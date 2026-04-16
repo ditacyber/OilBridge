@@ -2246,15 +2246,53 @@
   // PAGE: Terms / Privacy
   // ============================================================
   function renderTerms(main) {
-    setPageMeta('Terms of Service', 'OilBridge terms of service governing use of the technology platform, platform-fee structure, and liability.');
+    setPageMeta('Terms of Service — OilBridge', 'OilBridge terms of service: platform fees, user eligibility, non-circumvention, dispute resolution, and liability for EU oil trading.');
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
       <h2 class="mb-24">Terms of Service</h2>
       <div class="card" style="line-height:1.8;color:var(--text-secondary)">
-        <h3>1. Acceptance of Terms</h3><p>By accessing and using the OilBridge platform, you agree to these terms of service.</p>
-        <h3 class="mt-24">2. Platform Usage</h3><p>OilBridge is a technology platform that enables verified EU-registered companies to manage their own oil deals. OilBridge does not act as a broker and does not buy, sell or take custody of any commodity. All users must complete KYC verification via Stripe Identity before listings become visible to them.</p>
-        <h3 class="mt-24">3. Platform Fee</h3><p>A fixed platform fee of 3.2% is charged per successfully completed deal. There are no subscription fees, listing fees, or other hidden costs.</p>
-        <h3 class="mt-24">4. Liability</h3><p>OilBridge provides software tools only. We do not own, transport, inspect or deliver any commodity, and we are not liable for the quality, delivery, or performance of any deal arranged between users of the platform.</p>
-        <h3 class="mt-24">5. Governing Law</h3><p>These terms are governed by the laws of the Netherlands and the European Union.</p>
+        <p style="font-size:0.85rem;color:var(--text-muted)">OilBridge is a trading name of Sentari Holding BV, registered in the Netherlands under KvK number 98714791.</p>
+
+        <h3 class="mt-24">1. Acceptance of Terms</h3>
+        <p>By accessing and using the OilBridge platform ("Platform"), you agree to be bound by these Terms of Service, the Privacy Policy, and the Non-Disclosure, Non-Circumvention &amp; Non-Solicitation Agreement (NDA). If you do not agree, you must not use the Platform.</p>
+
+        <h3 class="mt-24">2. User Eligibility</h3>
+        <p>The Platform is available exclusively to companies that are (a) registered in a European Union member state, (b) not domiciled in or controlled by entities in a sanctioned jurisdiction, and (c) have completed identity verification via Stripe Identity or the Platform's manual KYC process. Natural persons acting in a private capacity are not eligible. The Company reserves the right to refuse registration at its sole discretion.</p>
+
+        <h3 class="mt-24">3. Platform Usage</h3>
+        <p>OilBridge is a technology platform that enables verified EU-registered companies to discover counterparties and manage oil trading deals. OilBridge does not act as a broker, agent, or trading intermediary. OilBridge does not buy, sell, own, transport, inspect, or take custody of any commodity. All commercial decisions are made by the users themselves.</p>
+
+        <h3 class="mt-24">4. Platform Fee</h3>
+        <p>A platform fee applies per successfully completed deal. <strong>Early adopter rate: 2%</strong> for the first 50 completed deals on the Platform. <strong>Standard rate: 3.2%</strong> thereafter. The applicable rate is locked in at the time of match creation. There are no subscription fees, listing fees, or other hidden costs. The platform fee is payable via Stripe before the deal is marked as completed.</p>
+
+        <h3 class="mt-24">5. Non-Circumvention</h3>
+        <p>Users may not contact, negotiate with, or enter into transactions with counterparties first introduced through the Platform outside of or bypassing the Platform, for a period of twenty-four (24) months from the date of introduction. The full non-circumvention terms, including penalties, are set out in the NDA accepted during registration. By using the Platform, you reaffirm your agreement to these terms.</p>
+
+        <h3 class="mt-24">6. Prohibited Use</h3>
+        <p>The following uses of the Platform are strictly prohibited and will result in immediate account termination:</p>
+        <p>(a) Use by or on behalf of any person, entity, or government subject to EU, UN, or OFAC sanctions;<br>
+        (b) Fraudulent activity, including misrepresentation of identity, company details, or product availability;<br>
+        (c) Market manipulation, including posting fictitious listings to influence pricing or counterparty behaviour;<br>
+        (d) Attempting to extract, scrape, or harvest data from the Platform, including user identities and listing information;<br>
+        (e) Sharing personal contact details (email, phone, messaging identifiers) through the Platform's chat system;<br>
+        (f) Any activity that violates applicable Dutch, EU, or international law.</p>
+
+        <h3 class="mt-24">7. Liability</h3>
+        <p>OilBridge provides software tools only. The Company is not liable for the quality, quantity, delivery, or performance of any commodity traded between users. The Company is not liable for any direct, indirect, incidental, or consequential damages arising from the use of the Platform. Users trade entirely at their own risk and are responsible for their own due diligence beyond the verification provided by the Platform.</p>
+
+        <h3 class="mt-24">8. Account Termination</h3>
+        <p>The Company reserves the right to suspend or permanently terminate any user account, without prior notice, for violation of these Terms, the NDA, or any applicable law. Upon termination, the user's access to the Platform is revoked immediately. Obligations under the NDA, including non-circumvention and platform fee provisions, survive account termination.</p>
+
+        <h3 class="mt-24">9. Platform Availability</h3>
+        <p>The Company strives to maintain continuous availability of the Platform but does not guarantee uninterrupted access. The Platform may be temporarily unavailable due to maintenance, updates, or technical issues. The Company is not liable for any losses arising from Platform downtime or interruptions.</p>
+
+        <h3 class="mt-24">10. Intellectual Property</h3>
+        <p>All intellectual property rights in the Platform — including its software, design, branding, documentation, and content — are owned exclusively by Sentari Holding BV. Users are granted a limited, non-exclusive, non-transferable licence to use the Platform for its intended purpose. No other rights are granted.</p>
+
+        <h3 class="mt-24">11. Dispute Resolution</h3>
+        <p>All disputes arising from or in connection with these Terms shall be governed by the laws of the Netherlands and submitted to the exclusive jurisdiction of the courts of Amsterdam, the Netherlands.</p>
+
+        <h3 class="mt-24">12. Amendments</h3>
+        <p>The Company may amend these Terms at any time by publishing the updated version on the Platform. Continued use of the Platform after publication constitutes acceptance of the amended Terms. For material changes, the Company will notify registered users via email.</p>
       </div></div></section>`;
   }
 

@@ -2213,7 +2213,7 @@
         <h3>1. Data Collection</h3><p>We collect company information, personal contact details, and KYC documents necessary for platform operation and regulatory compliance.</p>
         <h3 class="mt-24">2. Data Usage</h3><p>Your data is used for identity verification, trade matching, communication between counterparties, and regulatory reporting.</p>
         <h3 class="mt-24">3. Data Protection</h3><p>We comply with GDPR and implement industry-standard security measures to protect your information.</p>
-        <h3 class="mt-24">4. Data Sharing</h3><p>Contact details are shared with counterparties only after both parties accept a match. We do not sell data to third parties.</p>
+        <h3 class="mt-24">4. Data Sharing</h3><p>Personal contact details are never shared between counterparties. All communication takes place within the OilBridge platform. After commission payment, parties receive a deal reference number to coordinate delivery. We do not sell data to third parties.</p>
         <h3 class="mt-24">5. Your Rights</h3><p>You have the right to access, correct, or delete your personal data. Contact contact@oilbridge.eu for data requests.</p>
       </div></div></section>`;
   }

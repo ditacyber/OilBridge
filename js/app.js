@@ -697,6 +697,73 @@
   // ============================================================
   // PAGE: Register (Multi-step)
   // ============================================================
+  const NDA_HTML = `
+           <h4>NON-DISCLOSURE, NON-CIRCUMVENTION AND NON-SOLICITATION AGREEMENT</h4>
+           <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:16px">Effective date: the date of digital acceptance by the Recipient</p>
+
+           <h4>Parties</h4>
+           <p><strong>(1)</strong> OilBridge, a trading name of <strong>Sentari Holding BV</strong>, a company registered in the Netherlands under KvK number 98714791, hereinafter referred to as the <strong>"Company"</strong>.</p>
+           <p><strong>(2)</strong> The undersigned user registering on the OilBridge platform, hereinafter referred to as the <strong>"Recipient"</strong>.</p>
+           <p>The Company and the Recipient are hereinafter individually referred to as a "Party" and collectively as the "Parties".</p>
+
+           <h4>1. Definitions</h4>
+           <p><strong>"Platform"</strong> means the OilBridge web application at oilbridge.eu and any associated services, APIs, or communication systems operated by the Company.</p>
+           <p><strong>"Confidential Information"</strong> means all information disclosed through or obtained via the Platform, including but not limited to: trading data, pricing information, bid and offer details, counterparty identities, company names and registration details, transaction volumes, delivery schedules, storage allocations, business strategies, commission structures, user lists, and any information marked or reasonably understood to be confidential.</p>
+           <p><strong>"Introduction"</strong> means any instance where the Recipient first becomes aware of, or is connected with, a counterparty through the Platform, whether via a listing, a match, a chat interaction, or any other Platform feature.</p>
+           <p><strong>"Platform Fee"</strong> means the commission charged by the Company on transactions facilitated through the Platform, as published on the Platform at the time of the transaction.</p>
+
+           <h4>2. Confidentiality Obligations</h4>
+           <p>The Recipient agrees to:</p>
+           <p>(a) Maintain strict confidentiality of all Confidential Information received through the Platform;</p>
+           <p>(b) Not disclose, publish, or otherwise reveal any Confidential Information to any third party without the prior written consent of the Company;</p>
+           <p>(c) Use Confidential Information solely for the purpose of conducting legitimate oil trading activities on the Platform;</p>
+           <p>(d) Implement appropriate technical and organisational security measures to protect Confidential Information from unauthorised access, disclosure, or loss;</p>
+           <p>(e) Promptly notify the Company of any suspected or actual unauthorised disclosure of Confidential Information.</p>
+
+           <h4>3. Non-Circumvention</h4>
+           <p><strong>3.1</strong> The Recipient shall not, directly or indirectly, contact, deal with, negotiate with, or enter into any transaction with any counterparty first introduced through the Platform, outside of or bypassing the Platform, for a period of <strong>twenty-four (24) months</strong> from the date of the Introduction.</p>
+           <p><strong>3.2</strong> This non-circumvention obligation applies regardless of whether a transaction was completed on the Platform, and extends to the Recipient's affiliates, subsidiaries, directors, employees, agents, and any entity in which the Recipient holds a controlling interest.</p>
+           <p><strong>3.3</strong> In the event of a breach of this clause, the Recipient shall pay the Company a penalty equal to <strong>ten (10) times the Platform Fee</strong> that would have been payable on the circumvented transaction(s), calculated on the total value of such transaction(s). This penalty is without prejudice to the Company's right to claim additional damages.</p>
+           <p><strong>3.4</strong> The Recipient acknowledges that the Company invests substantial resources in counterparty verification, sanctions screening, and platform development, and that the non-circumvention clause is reasonable and necessary to protect the Company's legitimate business interests.</p>
+
+           <h4>4. Non-Solicitation</h4>
+           <p><strong>4.1</strong> The Recipient shall not, for a period of <strong>twenty-four (24) months</strong> from the date of acceptance of this Agreement, directly or indirectly solicit, recruit, or encourage any user of the Platform to use a competing platform, service, or marketplace for the purpose of oil trading or commodity deal matching.</p>
+           <p><strong>4.2</strong> This clause does not prevent the Recipient from engaging in general marketing activities not specifically targeted at OilBridge users.</p>
+
+           <h4>5. Platform Fee Acknowledgement</h4>
+           <p><strong>5.1</strong> The Recipient acknowledges and agrees that the Platform Fee applies to all transactions that originate from an Introduction made through the Platform.</p>
+           <p><strong>5.2</strong> If a transaction between parties who were introduced through the Platform is completed outside the Platform — whether intentionally or otherwise — the Platform Fee remains due and payable to the Company, calculated on the total value of the transaction at the standard Platform Fee rate applicable at the time of the original Introduction.</p>
+           <p><strong>5.3</strong> The Recipient agrees to notify the Company within fourteen (14) days of any transaction completed with a counterparty first introduced through the Platform, regardless of where or how the transaction was executed.</p>
+
+           <h4>6. Data Protection</h4>
+           <p><strong>6.1</strong> The Company processes personal data in accordance with the General Data Protection Regulation (EU) 2016/679 ("GDPR") and applicable Dutch data protection legislation.</p>
+           <p><strong>6.2</strong> Personal contact details (including email addresses, phone numbers, and messaging identifiers) are <strong>never shared directly</strong> between counterparties. All communication between Parties takes place exclusively within the Platform.</p>
+           <p><strong>6.3</strong> The Recipient shall not attempt to extract, scrape, or collect personal data of other Platform users by any means.</p>
+
+           <h4>7. Duration and Survival</h4>
+           <p><strong>7.1</strong> This Agreement shall remain in effect for a period of <strong>five (5) years</strong> from the date of acceptance.</p>
+           <p><strong>7.2</strong> The obligations under clauses 2 (Confidentiality), 3 (Non-Circumvention), and 5 (Platform Fee Acknowledgement) shall survive the termination or expiration of this Agreement and the closure of the Recipient's account on the Platform.</p>
+
+           <h4>8. Remedies</h4>
+           <p><strong>8.1</strong> The Recipient acknowledges that any breach of this Agreement may cause irreparable harm to the Company for which monetary damages alone would be insufficient.</p>
+           <p><strong>8.2</strong> In the event of a breach or threatened breach, the Company shall be entitled to seek immediate injunctive relief from a court of competent jurisdiction, in addition to any other remedies available at law or in equity, including but not limited to the penalty specified in clause 3.3 and full compensation for all damages, costs, and lost profits.</p>
+
+           <h4>9. Governing Law and Jurisdiction</h4>
+           <p><strong>9.1</strong> This Agreement shall be governed by and construed in accordance with the laws of the Netherlands.</p>
+           <p><strong>9.2</strong> Any disputes arising from or in connection with this Agreement shall be submitted to the exclusive jurisdiction of the courts of Amsterdam, the Netherlands.</p>
+
+           <h4>10. Digital Acceptance</h4>
+           <p><strong>10.1</strong> By clicking "I Accept" or the equivalent acceptance mechanism on the Platform, the Recipient agrees to be bound by all terms and conditions of this Agreement.</p>
+           <p><strong>10.2</strong> This digital acceptance constitutes a legally binding electronic signature within the meaning of Regulation (EU) No 910/2014 (the "eIDAS Regulation") and the Dutch Telecommunications Act (<em>Telecommunicatiewet</em>). The Recipient acknowledges that this electronic acceptance has the same legal effect as a handwritten signature.</p>
+           <p><strong>10.3</strong> The Company shall record the date, time, IP address, and user account associated with each acceptance of this Agreement.</p>
+
+           <h4>11. Severability</h4>
+           <p>If any provision of this Agreement is held to be invalid or unenforceable, the remaining provisions shall continue in full force and effect. The invalid or unenforceable provision shall be replaced by a valid provision that most closely reflects the original intent.</p>
+
+           <h4>12. Entire Agreement</h4>
+           <p>This Agreement, together with the OilBridge Terms of Service and Privacy Policy, constitutes the entire agreement between the Parties regarding the subject matter herein and supersedes all prior negotiations, representations, and agreements.</p>
+  `;
+
   function renderRegister(main) {
     if (store.isLoggedIn()) { navigate('home'); return; }
     setPageMeta('Register — Join OilBridge', 'Create your OilBridge account. Stripe Identity verification, NDA protection, and a transparent 3.2% platform fee on completed deals.');
@@ -732,22 +799,7 @@
 
         `<h3 class="mb-16" data-i18n="register_nda_title">${esc(i18n.t('register_nda_title'))}</h3>
          <p class="text-muted mb-24" style="font-size:0.9rem" data-i18n="register_nda_desc">${esc(i18n.t('register_nda_desc'))}</p>
-         <div class="nda-content">
-           <h4>NON-DISCLOSURE AGREEMENT</h4>
-           <p>This Non-Disclosure Agreement ("Agreement") is entered into by and between OilBridge ("Company") and the undersigned party ("Recipient").</p>
-           <h4>1. Confidential Information</h4>
-           <p>All information shared through the OilBridge platform, including but not limited to: trading data, pricing information, counterparty identities, transaction volumes, delivery schedules, and business strategies shall be considered Confidential Information.</p>
-           <h4>2. Obligations</h4>
-           <p>The Recipient agrees to: (a) maintain strict confidentiality of all information received through the platform; (b) not disclose any information to third parties without prior written consent; (c) use the information solely for the purpose of conducting legitimate oil trading activities on the platform; (d) implement appropriate security measures to protect confidential data.</p>
-           <h4>3. Duration</h4>
-           <p>This Agreement shall remain in effect for a period of five (5) years from the date of acceptance, and shall survive the termination of the Recipient's account on the platform.</p>
-           <h4>4. Remedies</h4>
-           <p>The Recipient acknowledges that any breach of this Agreement may cause irreparable harm to the Company, and the Company shall be entitled to seek injunctive relief in addition to any other remedies available at law or in equity.</p>
-           <h4>5. Governing Law</h4>
-           <p>This Agreement shall be governed by the laws of the Netherlands and the European Union, with exclusive jurisdiction vested in the courts of Amsterdam.</p>
-           <h4>6. Commission Structure</h4>
-           <p>The Recipient acknowledges and agrees that a commission of 3.2% shall be applied to all successfully matched and completed transactions facilitated through the OilBridge platform. Payment of commission is due upon completion of the transaction.</p>
-         </div>
+         <div class="nda-content">${NDA_HTML}</div>
          <label class="form-check mt-16"><input type="checkbox" id="nda-accept" ${formData.ndaAccepted ? 'checked' : ''}><span data-i18n="register_nda_accept">${esc(i18n.t('register_nda_accept'))}</span></label>`,
 
         `<div class="form-group"><label class="form-label" data-i18n="register_password_label">${esc(i18n.t('register_password_label'))}</label><input type="password" class="form-input" id="reg-password" required autocomplete="new-password"><div class="form-hint" data-i18n="register_password_hint">${esc(i18n.t('register_password_hint'))}</div></div>
@@ -2220,18 +2272,11 @@
   }
 
   function renderNda(main) {
-    setPageMeta('NDA Agreement', 'OilBridge Non-Disclosure Agreement protecting confidential trading information shared through the platform.');
+    setPageMeta('NDA Agreement — OilBridge', 'OilBridge Non-Disclosure, Non-Circumvention and Non-Solicitation Agreement protecting confidential trading information and counterparty introductions.');
     main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
-      <h2 class="mb-24">Non-Disclosure Agreement</h2>
-      <div class="card" style="line-height:1.8;color:var(--text-secondary)">
-        <p>This Non-Disclosure Agreement ("Agreement") is entered into by and between OilBridge ("Company") and the undersigned party ("Recipient").</p>
-        <h3 class="mt-24">1. Confidential Information</h3><p>All information shared through the OilBridge platform, including but not limited to: trading data, pricing information, counterparty identities, transaction volumes, delivery schedules, and business strategies shall be considered Confidential Information.</p>
-        <h3 class="mt-24">2. Obligations</h3><p>The Recipient agrees to: (a) maintain strict confidentiality of all information received through the platform; (b) not disclose any information to third parties without prior written consent; (c) use the information solely for the purpose of conducting legitimate oil trading activities on the platform; (d) implement appropriate security measures to protect confidential data.</p>
-        <h3 class="mt-24">3. Duration</h3><p>This Agreement shall remain in effect for a period of five (5) years from the date of acceptance, and shall survive the termination of the Recipient's account on the platform.</p>
-        <h3 class="mt-24">4. Remedies</h3><p>The Recipient acknowledges that any breach of this Agreement may cause irreparable harm to the Company, and the Company shall be entitled to seek injunctive relief in addition to any other remedies available at law or in equity.</p>
-        <h3 class="mt-24">5. Governing Law</h3><p>This Agreement shall be governed by the laws of the Netherlands and the European Union, with exclusive jurisdiction vested in the courts of Amsterdam.</p>
-        <h3 class="mt-24">6. Commission Structure</h3><p>The Recipient acknowledges and agrees that a platform fee applies to all successfully matched and completed transactions facilitated through the OilBridge platform. Payment of the platform fee is due upon completion of the transaction.</p>
-      </div></div></section>`;
+      <h2 class="mb-24">Non-Disclosure, Non-Circumvention &amp; Non-Solicitation Agreement</h2>
+      <div class="card" style="line-height:1.8;color:var(--text-secondary)">${NDA_HTML}</div>
+    </div></section>`;
   }
 
   // ============================================================

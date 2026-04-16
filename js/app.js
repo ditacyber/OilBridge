@@ -153,6 +153,7 @@
       admin: renderAdmin,
       terms: renderTerms,
       privacy: renderPrivacy,
+      nda: renderNda,
       blog: renderBlog,
       'payment-success': renderPaymentSuccess,
       chat: renderChat,
@@ -2215,6 +2216,21 @@
         <h3 class="mt-24">3. Data Protection</h3><p>We comply with GDPR and implement industry-standard security measures to protect your information.</p>
         <h3 class="mt-24">4. Data Sharing</h3><p>Personal contact details are never shared between counterparties. All communication takes place within the OilBridge platform. After commission payment, parties receive a deal reference number to coordinate delivery. We do not sell data to third parties.</p>
         <h3 class="mt-24">5. Your Rights</h3><p>You have the right to access, correct, or delete your personal data. Contact contact@oilbridge.eu for data requests.</p>
+      </div></div></section>`;
+  }
+
+  function renderNda(main) {
+    setPageMeta('NDA Agreement', 'OilBridge Non-Disclosure Agreement protecting confidential trading information shared through the platform.');
+    main.innerHTML = `<section class="page-section"><div class="container" style="max-width:800px">
+      <h2 class="mb-24">Non-Disclosure Agreement</h2>
+      <div class="card" style="line-height:1.8;color:var(--text-secondary)">
+        <p>This Non-Disclosure Agreement ("Agreement") is entered into by and between OilBridge ("Company") and the undersigned party ("Recipient").</p>
+        <h3 class="mt-24">1. Confidential Information</h3><p>All information shared through the OilBridge platform, including but not limited to: trading data, pricing information, counterparty identities, transaction volumes, delivery schedules, and business strategies shall be considered Confidential Information.</p>
+        <h3 class="mt-24">2. Obligations</h3><p>The Recipient agrees to: (a) maintain strict confidentiality of all information received through the platform; (b) not disclose any information to third parties without prior written consent; (c) use the information solely for the purpose of conducting legitimate oil trading activities on the platform; (d) implement appropriate security measures to protect confidential data.</p>
+        <h3 class="mt-24">3. Duration</h3><p>This Agreement shall remain in effect for a period of five (5) years from the date of acceptance, and shall survive the termination of the Recipient's account on the platform.</p>
+        <h3 class="mt-24">4. Remedies</h3><p>The Recipient acknowledges that any breach of this Agreement may cause irreparable harm to the Company, and the Company shall be entitled to seek injunctive relief in addition to any other remedies available at law or in equity.</p>
+        <h3 class="mt-24">5. Governing Law</h3><p>This Agreement shall be governed by the laws of the Netherlands and the European Union, with exclusive jurisdiction vested in the courts of Amsterdam.</p>
+        <h3 class="mt-24">6. Commission Structure</h3><p>The Recipient acknowledges and agrees that a platform fee applies to all successfully matched and completed transactions facilitated through the OilBridge platform. Payment of the platform fee is due upon completion of the transaction.</p>
       </div></div></section>`;
   }
 

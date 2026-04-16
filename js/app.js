@@ -222,7 +222,7 @@
     let ctaHref, ctaLabel;
     if (!homeUser) {
       ctaHref = '#register';
-      ctaLabel = 'Start Trading';
+      ctaLabel = 'Request Access';
     } else if (store.isVerified()) {
       ctaHref = '#place-listing';
       ctaLabel = i18n.t('nav_place_listing');
@@ -258,10 +258,19 @@
       <section class="hero">
         <div class="hero-content">
           <h1>Dealflow &amp; Compliance Platform<br>for European Oil Trading</h1>
-          <p>OilBridge enables oil traders to manage deals, verify counterparties and stay compliant — all in one secure platform.</p>
+          <p>OilBridge helps EU oil traders find serious counterparties faster &mdash; with less wasted time and better pre-screening than brokers.</p>
           <div class="hero-actions">
             <a href="#listings" class="btn btn-primary btn-lg">${esc(i18n.t('hero_cta_browse'))}</a>
             <a href="${ctaHref}" class="btn btn-secondary btn-lg">${esc(ctaLabel)}</a>
+          </div>
+          <div class="hero-audience">
+            <p class="hero-audience-label">Built for:</p>
+            <div class="hero-audience-tags">
+              <span class="hero-audience-tag">Small &amp; mid-size EU oil traders</span>
+              <span class="hero-audience-tag">Petroleum product brokers</span>
+              <span class="hero-audience-tag">Fuel import/export companies</span>
+              <span class="hero-audience-tag">Companies with surplus oil stock</span>
+            </div>
           </div>
           ${hasStats ? `
           <div class="hero-stats">

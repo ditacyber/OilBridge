@@ -19,3 +19,6 @@ recipients.*.txt
 prospects.txt
 prospects.json
 prospects-raw.txt
+
+# Email send log
+sent-log.txt

@@ -409,6 +409,19 @@ function initDatabase() {
   // Migrate: add commission rate (for early-adopter pricing)
   try { db.run('ALTER TABLE matches ADD COLUMN commission_rate REAL'); } catch(e) {}
 
+  // Analytics table (cookieless, GDPR-compliant)
+  db.run(`CREATE TABLE IF NOT EXISTS page_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    visitor_hash TEXT NOT NULL,
+    referrer TEXT,
+    country TEXT,
+    date TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`);
+  db.run('CREATE INDEX IF NOT EXISTS idx_pv_date ON page_views(date)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_pv_path ON page_views(path, date)');
+
   // Blog posts table (for AI-generated weekly articles)
   db.run(`CREATE TABLE IF NOT EXISTS blog_posts (
     id TEXT PRIMARY KEY,
@@ -728,6 +741,35 @@ function createApp() {
 
   // 50MB limit to accommodate base64-encoded KYC documents (max 5 files x 5MB each)
   app.use(express.json({ limit: '50mb' }));
+
+  // ========== Cookieless Analytics ==========
+  // Hash IP + User-Agent + daily salt for unique visitor counting without cookies.
+  // The hash cannot be reversed to identify individuals (GDPR compliant).
+  const analyticsSalt = crypto.randomBytes(16).toString('hex');
+
+  function visitorHash(req) {
+    const ip = req.ip || req.connection.remoteAddress || '';
+    const ua = req.headers['user-agent'] || '';
+    const day = new Date().toISOString().split('T')[0];
+    return crypto.createHash('sha256').update(ip + ua + day + analyticsSalt).digest('hex').slice(0, 16);
+  }
+
+  // POST /api/analytics/pageview — called by the frontend on each route change
+  app.post('/api/analytics/pageview', (req, res) => {
+    try {
+      const p = String(req.body.path || '/').slice(0, 200);
+      const ref = String(req.body.referrer || '').slice(0, 500) || null;
+      const hash = visitorHash(req);
+      const now = new Date();
+      const date = now.toISOString().split('T')[0];
+      db.run(
+        'INSERT INTO page_views (path, visitor_hash, referrer, date, created_at) VALUES (?, ?, ?, ?, ?)',
+        [p, hash, ref, date, now.toISOString()]
+      );
+      saveDb();
+    } catch (e) {}
+    res.status(204).end();
+  });
 
   // Async route wrapper — forwards rejected promises to the error middleware
   const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -1428,6 +1470,47 @@ function createApp() {
       activeListings: (queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'") || {}).c || 0,
       totalMatches: (queryOne('SELECT COUNT(*) as c FROM matches') || {}).c || 0,
       estimatedRevenue: (queryOne("SELECT COALESCE(SUM(commission), 0) as c FROM matches WHERE status IN ('accepted','completed')") || {}).c || 0,
+    });
+  });
+
+  // ========== Analytics API (admin only) ==========
+  app.get('/api/admin/analytics', auth, adminOnly, (req, res) => {
+    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
+
+    const dailyViews = queryAll(
+      'SELECT date, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date >= ? GROUP BY date ORDER BY date',
+      [since]
+    );
+
+    const topPages = queryAll(
+      'SELECT path, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date >= ? GROUP BY path ORDER BY views DESC LIMIT 20',
+      [since]
+    );
+
+    const topReferrers = queryAll(
+      "SELECT referrer, COUNT(*) as views FROM page_views WHERE date >= ? AND referrer IS NOT NULL AND referrer != '' GROUP BY referrer ORDER BY views DESC LIMIT 20",
+      [since]
+    );
+
+    const totals = queryOne(
+      'SELECT COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date >= ?',
+      [since]
+    ) || { views: 0, visitors: 0 };
+
+    const today = new Date().toISOString().split('T')[0];
+    const todayStats = queryOne(
+      'SELECT COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date = ?',
+      [today]
+    ) || { views: 0, visitors: 0 };
+
+    res.json({
+      period: { days, since },
+      totals: { views: totals.views, visitors: totals.visitors },
+      today: { views: todayStats.views, visitors: todayStats.visitors },
+      dailyViews,
+      topPages,
+      topReferrers
     });
   });
 

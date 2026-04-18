@@ -132,6 +132,18 @@
     window.location.hash = '#' + page;
   }
 
+  // === Analytics (cookieless) ===
+  function trackPageView() {
+    try {
+      const path = window.location.hash.slice(1) || 'home';
+      fetch('/api/analytics/pageview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, referrer: document.referrer || '' })
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
   // === Rendering ===
   async function render() {
     closeActiveStream();
@@ -140,6 +152,7 @@
     const main = document.getElementById('main-content');
     updateNav();
     updateWatermark();
+    trackPageView();
 
     const pages = {
       home: renderHome,
@@ -1274,6 +1287,7 @@
             <button class="tab" data-tab="users" data-i18n="admin_all_users">${esc(i18n.t('admin_all_users'))}</button>
             <button class="tab" data-tab="listings" data-i18n="admin_all_listings">${esc(i18n.t('admin_all_listings'))}</button>
             <button class="tab" data-tab="chats">Chats</button>
+            <button class="tab" data-tab="analytics">Analytics</button>
           </div>
           <div id="admin-tab-content"></div>
         </div>
@@ -1326,6 +1340,53 @@
             <td>${l.seller ? esc(l.seller.companyName) : 'N/A'}</td><td>${formatDate(l.createdAt)}</td>
           </tr>`).join('')}
         </tbody></table></div>`;
+      } else if (activeTab === 'analytics') {
+        try {
+          const res = await fetch('/api/admin/analytics?days=30', { headers: { 'Authorization': 'Bearer ' + store.token } });
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+
+          const maxViews = Math.max(...data.dailyViews.map(d => d.views), 1);
+          const chartBars = data.dailyViews.map(d => {
+            const pct = Math.round((d.views / maxViews) * 100);
+            const day = d.date.slice(5);
+            return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+              <span style="width:50px;font-size:0.75rem;color:var(--text-muted);text-align:right">${day}</span>
+              <div style="background:var(--accent);height:18px;border-radius:3px;min-width:2px;width:${pct}%"></div>
+              <span style="font-size:0.75rem;color:var(--text-secondary)">${d.views} / ${d.visitors}u</span>
+            </div>`;
+          }).join('');
+
+          content.innerHTML = `
+            <div class="admin-stats" style="margin-bottom:24px">
+              <div class="admin-stat-card"><div class="admin-stat-value">${data.today.views}</div><div class="admin-stat-label">Views Today</div></div>
+              <div class="admin-stat-card"><div class="admin-stat-value">${data.today.visitors}</div><div class="admin-stat-label">Visitors Today</div></div>
+              <div class="admin-stat-card"><div class="admin-stat-value">${data.totals.views}</div><div class="admin-stat-label">Views (30d)</div></div>
+              <div class="admin-stat-card"><div class="admin-stat-value">${data.totals.visitors}</div><div class="admin-stat-label">Visitors (30d)</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+              <div class="card">
+                <h4 style="margin-bottom:16px">Daily Views / Unique Visitors</h4>
+                ${chartBars || '<p class="text-muted">No data yet</p>'}
+              </div>
+              <div>
+                <div class="card" style="margin-bottom:16px">
+                  <h4 style="margin-bottom:12px">Top Pages</h4>
+                  <table class="table" style="font-size:0.85rem"><thead><tr><th>Page</th><th>Views</th><th>Visitors</th></tr></thead><tbody>
+                    ${data.topPages.map(p => `<tr><td><code>${esc(p.path)}</code></td><td>${p.views}</td><td>${p.visitors}</td></tr>`).join('')}
+                  </tbody></table>
+                </div>
+                <div class="card">
+                  <h4 style="margin-bottom:12px">Top Referrers</h4>
+                  ${data.topReferrers.length ? `<table class="table" style="font-size:0.85rem"><thead><tr><th>Source</th><th>Views</th></tr></thead><tbody>
+                    ${data.topReferrers.map(r => `<tr><td>${esc(r.referrer)}</td><td>${r.views}</td></tr>`).join('')}
+                  </tbody></table>` : '<p class="text-muted">No referrer data yet</p>'}
+                </div>
+              </div>
+            </div>`;
+        } catch (err) {
+          content.innerHTML = `<div class="empty-state"><h3>Analytics error</h3><p>${esc(err.message)}</p></div>`;
+        }
       } else if (activeTab === 'chats') {
         const chats = await store.getAdminChats();
         if (!chats.length) {

@@ -120,7 +120,10 @@ function toUser(row) {
     stripeIdentityStatus: row.stripe_identity_status || null,
     kycDetails,
     kycVerifiedAt: row.ai_verified_at || null,
-    createdAt: row.created_at
+    flagged: !!row.flagged,
+    flagReason: row.flag_reason || null,
+    createdAt: row.created_at,
+    ...getUserReputation(row.id)
   };
 }
 
@@ -160,10 +163,31 @@ function getCurrentCommissionRate() {
   return completedCount < EARLY_ADOPTER_LIMIT ? EARLY_ADOPTER_RATE : COMMISSION_RATE;
 }
 
+function getUserReputation(userId) {
+  const stats = queryOne(
+    "SELECT COUNT(*) as count, COALESCE(AVG(score), 0) as avg FROM ratings WHERE rated_id = ?",
+    [userId]
+  );
+  const completedDeals = (queryOne(
+    "SELECT COUNT(*) as c FROM matches WHERE (buyer_id = ? OR seller_id = ?) AND status = 'completed' AND commission_paid = 1",
+    [userId, userId]
+  ) || {}).c || 0;
+  let badge = null;
+  if (completedDeals >= 10) badge = 'gold';
+  else if (completedDeals >= 5) badge = 'silver';
+  else if (completedDeals >= 1) badge = 'bronze';
+  return {
+    rating: stats.count > 0 ? Math.round(stats.avg * 10) / 10 : null,
+    ratingCount: stats.count,
+    completedDeals,
+    badge
+  };
+}
+
 function enrichListing(row) {
   const l = toListing(row);
-  const seller = queryOne('SELECT id, company_name, company_country FROM users WHERE id = ?', [row.user_id]);
-  l.seller = seller ? { id: seller.id, companyName: seller.company_name, companyCountry: seller.company_country } : null;
+  const seller = queryOne('SELECT id, company_name, company_country, flagged FROM users WHERE id = ?', [row.user_id]);
+  l.seller = seller ? { id: seller.id, companyName: seller.company_name, companyCountry: seller.company_country, ...getUserReputation(seller.id) } : null;
   return l;
 }
 
@@ -408,6 +432,23 @@ function initDatabase() {
 
   // Migrate: add commission rate (for early-adopter pricing)
   try { db.run('ALTER TABLE matches ADD COLUMN commission_rate REAL'); } catch(e) {}
+
+  // Ratings table (post-deal reputation)
+  db.run(`CREATE TABLE IF NOT EXISTS ratings (
+    id TEXT PRIMARY KEY,
+    match_id TEXT NOT NULL,
+    rater_id TEXT NOT NULL,
+    rated_id TEXT NOT NULL,
+    score INTEGER NOT NULL CHECK(score >= 1 AND score <= 5),
+    created_at TEXT NOT NULL,
+    UNIQUE(match_id, rater_id)
+  )`);
+  db.run('CREATE INDEX IF NOT EXISTS idx_ratings_rated ON ratings(rated_id)');
+
+  // Scammer/flag columns on users
+  try { db.run("ALTER TABLE users ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0"); } catch(e) {}
+  try { db.run("ALTER TABLE users ADD COLUMN flag_reason TEXT"); } catch(e) {}
+  try { db.run("ALTER TABLE users ADD COLUMN flagged_at TEXT"); } catch(e) {}
 
   // Analytics table (cookieless, GDPR-compliant)
   db.run(`CREATE TABLE IF NOT EXISTS page_views (
@@ -782,6 +823,7 @@ function createApp() {
     if (!session) return res.status(401).json({ error: 'Invalid session' });
     const user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
     if (!user) return res.status(401).json({ error: 'User not found' });
+    if (user.flagged) return res.status(403).json({ error: 'Your account has been suspended. Contact contact@oilbridge.eu for information.', code: 'account_flagged' });
     req.user = user;
     next();
   }
@@ -1460,6 +1502,63 @@ function createApp() {
     });
   });
 
+  // ========== Ratings ==========
+  // POST /api/matches/:id/rate — rate counterparty after a completed deal
+  app.post('/api/matches/:id/rate', auth, (req, res) => {
+    const match = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+    if (!match) return res.status(404).json({ error: 'Match not found' });
+    if (match.buyer_id !== req.user.id && match.seller_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    if (match.status !== 'completed' || !match.commission_paid) return res.status(400).json({ error: 'Can only rate completed deals' });
+    const score = parseInt(req.body.score);
+    if (!score || score < 1 || score > 5) return res.status(400).json({ error: 'Score must be 1-5' });
+    const ratedId = match.buyer_id === req.user.id ? match.seller_id : match.buyer_id;
+    const existing = queryOne('SELECT id FROM ratings WHERE match_id = ? AND rater_id = ?', [match.id, req.user.id]);
+    if (existing) return res.status(409).json({ error: 'Already rated this deal' });
+    run(
+      'INSERT INTO ratings (id, match_id, rater_id, rated_id, score, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [generateId('rat'), match.id, req.user.id, ratedId, score, new Date().toISOString()]
+    );
+    res.json({ success: true, reputation: getUserReputation(ratedId) });
+  });
+
+  // GET /api/users/:id/reputation — public reputation data
+  app.get('/api/users/:id/reputation', (req, res) => {
+    const user = queryOne('SELECT id, flagged FROM users WHERE id = ?', [req.params.id]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(getUserReputation(user.id));
+  });
+
+  // ========== Scammer Management (admin) ==========
+  app.post('/api/admin/flag-user', auth, adminOnly, (req, res) => {
+    const { userId, reason } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    const user = queryOne('SELECT id, email, company_name FROM users WHERE id = ?', [userId]);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    run('UPDATE users SET flagged = 1, flag_reason = ?, flagged_at = ? WHERE id = ?',
+        [reason || 'Flagged by admin', new Date().toISOString(), userId]);
+    run("DELETE FROM sessions WHERE user_id = ?", [userId]);
+    run("UPDATE listings SET status = 'suspended' WHERE user_id = ?", [userId]);
+    console.log(`[scam] Flagged user ${userId} (${user.company_name}): ${reason || 'no reason'}`);
+    res.json({ success: true });
+  });
+
+  app.post('/api/admin/unflag-user', auth, adminOnly, (req, res) => {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+    run('UPDATE users SET flagged = 0, flag_reason = NULL, flagged_at = NULL WHERE id = ?', [userId]);
+    console.log(`[scam] Unflagged user ${userId}`);
+    res.json({ success: true });
+  });
+
+  app.get('/api/admin/flagged-users', auth, adminOnly, (req, res) => {
+    const rows = queryAll("SELECT * FROM users WHERE flagged = 1 ORDER BY flagged_at DESC");
+    res.json(rows.map(r => ({
+      id: r.id, email: r.email, companyName: r.company_name,
+      companyCountry: r.company_country, flagReason: r.flag_reason,
+      flaggedAt: r.flagged_at
+    })));
+  });
+
   // ========== Stats ==========
   app.get('/api/stats', auth, adminOnly, (req, res) => {
     res.json({
@@ -1528,9 +1627,17 @@ function createApp() {
         sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0
       );
       const currentRate = getCurrentCommissionRate();
+      const monthStart = new Date().toISOString().slice(0, 7) + '-01';
+      const dealsThisMonth = (queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart]) || {}).c || 0;
+      const monthMatches = queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart]);
+      const volumeThisMonthEur = monthMatches.reduce((sum, m) => sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0);
+      const totalRegistered = (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin'") || {}).c || 0;
       res.json({
         completedDeals, verifiedTraders, activeListings,
         totalVolumeEur: Math.round(totalVolumeEur),
+        totalRegistered,
+        dealsThisMonth,
+        volumeThisMonthEur: Math.round(volumeThisMonthEur),
         commissionRate: currentRate,
         earlyAdopterRate: EARLY_ADOPTER_RATE,
         standardRate: COMMISSION_RATE,

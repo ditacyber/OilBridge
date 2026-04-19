@@ -277,28 +277,29 @@
             <a href="#listings" class="btn btn-primary btn-lg">${esc(i18n.t('hero_cta_browse'))}</a>
             <a href="${ctaHref}" class="btn btn-secondary btn-lg">${esc(ctaLabel)}</a>
           </div>
-          ${hasStats ? `
           <div class="hero-stats">
+            ${hasStats ? `
             <div class="hero-stat">
               <div class="hero-stat-value" data-count-to="${completedDeals}" data-format="number">0</div>
-              <div class="hero-stat-label">Completed Deals</div>
+              <div class="hero-stat-label">Deals Completed</div>
             </div>
             <div class="hero-stat">
               <div class="hero-stat-value" data-count-to="${totalVolumeEur}" data-format="euro-compact">&euro;0</div>
-              <div class="hero-stat-label">Total Volume Traded</div>
+              <div class="hero-stat-label">Volume Traded</div>
+            </div>` : ''}
+            <div class="hero-stat">
+              <div class="hero-stat-value" data-count-to="${publicStats.totalRegistered || verifiedTraders}" data-format="number">0</div>
+              <div class="hero-stat-label">Registered Traders</div>
             </div>
             <div class="hero-stat">
               <div class="hero-stat-value" data-count-to="${verifiedTraders}" data-format="number">0</div>
-              <div class="hero-stat-label">Verified Traders</div>
+              <div class="hero-stat-label">KYC Verified</div>
             </div>
             <div class="hero-stat">
               <div class="hero-stat-value" data-count-to="${activeListings}" data-format="number">0</div>
               <div class="hero-stat-label">Active Listings</div>
             </div>
-          </div>` : `
-          <div class="hero-launch-note">
-            <p>Join the first wave of verified EU oil traders &mdash; registration is open</p>
-          </div>`}
+          </div>
         </div>
       </section>
 
@@ -504,6 +505,27 @@
     requestAnimationFrame(step);
   }
 
+  function renderBadge(badge) {
+    if (!badge) return '';
+    const labels = { bronze: 'Bronze', silver: 'Silver', gold: 'Gold' };
+    const colors = { bronze: '#cd7f32', silver: '#a0a0a0', gold: '#c8860a' };
+    return `<span class="trader-badge" style="color:${colors[badge]}">&#9733; ${labels[badge]}</span>`;
+  }
+
+  function renderRating(rating, count) {
+    if (rating == null || count === 0) return '';
+    const stars = '&#9733;'.repeat(Math.round(rating)) + '&#9734;'.repeat(5 - Math.round(rating));
+    return `<span class="trader-rating" title="${rating}/5 from ${count} rating(s)">${stars} ${rating}</span>`;
+  }
+
+  function renderSellerReputation(seller) {
+    if (!seller) return '';
+    const parts = [];
+    if (seller.badge) parts.push(renderBadge(seller.badge));
+    if (seller.rating != null) parts.push(renderRating(seller.rating, seller.ratingCount));
+    return parts.length ? `<div class="seller-rep">${parts.join(' ')}</div>` : '';
+  }
+
   function renderListingCard(listing) {
     const seller = listing.seller;
     return `
@@ -519,6 +541,7 @@
             <div class="listing-card-meta-item">${svgIcon('calendar')}<span>${formatDate(listing.deliveryDate)}</span></div>
             ${seller ? `<div class="listing-card-meta-item">${svgIcon('user')}<span>${esc(seller.companyName)}</span></div>` : ''}
           </div>
+          ${renderSellerReputation(seller)}
         </div>
         <div class="listing-card-footer">
           <span class="listing-card-price">${formatCurrency(listing.price, listing.currency)} <small>${esc(i18n.t('general_per_unit'))}</small></span>
@@ -1287,6 +1310,7 @@
             <button class="tab" data-tab="users" data-i18n="admin_all_users">${esc(i18n.t('admin_all_users'))}</button>
             <button class="tab" data-tab="listings" data-i18n="admin_all_listings">${esc(i18n.t('admin_all_listings'))}</button>
             <button class="tab" data-tab="chats">Chats</button>
+            <button class="tab" data-tab="flagged">Flagged</button>
             <button class="tab" data-tab="analytics">Analytics</button>
           </div>
           <div id="admin-tab-content"></div>
@@ -1327,7 +1351,7 @@
               <td>${docCount}</td>
               <td><span class="badge badge-${statusBadge}">${esc(u.kycStatus)}</span></td>
               <td>${formatDate(u.createdAt)}</td>
-              <td><button class="btn btn-ghost btn-sm admin-docs-btn" data-id="${esc(u.id)}">Review</button></td></tr>`;
+              <td><div style="display:flex;gap:4px"><button class="btn btn-ghost btn-sm admin-docs-btn" data-id="${esc(u.id)}">Review</button>${u.kycStatus === 'verified' && !u.flagged ? `<button class="btn btn-danger btn-sm admin-flag-btn" data-id="${esc(u.id)}">Flag</button>` : ''}</div></td></tr>`;
           }).join('')}
         </tbody></table></div>`;
       } else if (activeTab === 'listings') {
@@ -1340,6 +1364,21 @@
             <td>${l.seller ? esc(l.seller.companyName) : 'N/A'}</td><td>${formatDate(l.createdAt)}</td>
           </tr>`).join('')}
         </tbody></table></div>`;
+      } else if (activeTab === 'flagged') {
+        const flagged = await store.getFlaggedUsers();
+        if (!flagged.length) {
+          content.innerHTML = `<div class="empty-state"><h3>No flagged users</h3><p>No scammers or flagged accounts.</p></div>`;
+        } else {
+          content.innerHTML = `<div class="table-wrapper"><table class="table"><thead><tr><th>Company</th><th>Email</th><th>Country</th><th>Reason</th><th>Flagged</th><th>Actions</th></tr></thead><tbody>
+            ${flagged.map(u => `<tr>
+              <td><strong>${esc(u.companyName)}</strong></td>
+              <td>${esc(u.email)}</td><td>${esc(u.companyCountry)}</td>
+              <td><span class="badge badge-error">${esc(u.flagReason || 'Flagged')}</span></td>
+              <td>${formatDate(u.flaggedAt)}</td>
+              <td><button class="btn btn-ghost btn-sm admin-unflag-btn" data-id="${esc(u.id)}">Unflag</button></td>
+            </tr>`).join('')}
+          </tbody></table></div>`;
+        }
       } else if (activeTab === 'analytics') {
         try {
           const res = await fetch('/api/admin/analytics?days=30', { headers: { 'Authorization': 'Bearer ' + store.token } });
@@ -1419,6 +1458,26 @@
       const rejectBtn = e.target.closest('.admin-reject-btn');
       const docsBtn = e.target.closest('.admin-docs-btn');
       const chatViewBtn = e.target.closest('.admin-chat-view-btn');
+      const flagBtn = e.target.closest('.admin-flag-btn');
+      const unflagBtn = e.target.closest('.admin-unflag-btn');
+
+      if (flagBtn) {
+        const reason = prompt('Reason for flagging this user:');
+        if (reason !== null) {
+          await store.flagUser(flagBtn.dataset.id, reason);
+          showToast('User flagged and locked out', 'success');
+          renderTab();
+        }
+        return;
+      }
+      if (unflagBtn) {
+        if (confirm('Unflag this user and restore access?')) {
+          await store.unflagUser(unflagBtn.dataset.id);
+          showToast('User unflagged', 'success');
+          renderTab();
+        }
+        return;
+      }
 
       if (chatViewBtn) {
         const data = await store.getAdminChatMessages(chatViewBtn.dataset.id);

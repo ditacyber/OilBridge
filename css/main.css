@@ -415,6 +415,18 @@ h1, h2, h3, h4, h5, h6 { line-height: 1.3; color: var(--text-primary); }
 .built-for-card h3 { font-size: 1.05rem; margin-bottom: 8px; }
 .built-for-card p { font-size: 0.88rem; color: var(--text-secondary); line-height: 1.6; }
 
+/* === Reputation === */
+.trader-badge {
+  font-size: 0.75rem; font-weight: 700; letter-spacing: 0.02em;
+}
+.trader-rating {
+  font-size: 0.75rem; color: var(--text-muted); letter-spacing: -0.02em;
+}
+.seller-rep {
+  display: flex; gap: 10px; align-items: center; margin-top: 8px;
+  padding-top: 8px; border-top: 1px solid var(--border); font-size: 0.8rem;
+}
+
 /* === 3-step Grid === */
 .steps-grid-3 { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 768px) { .steps-grid-3 { grid-template-columns: 1fr; } }

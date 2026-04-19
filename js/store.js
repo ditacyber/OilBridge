@@ -133,6 +133,14 @@ class Store {
   async getAdminChats() { return (await this.api('GET', '/admin/chats')) || []; }
   async getAdminChatMessages(matchId) { return await this.api('GET', '/admin/chats/' + matchId); }
 
+  // --- Ratings ---
+  async rateCounterparty(matchId, score) { return await this.api('POST', '/matches/' + matchId + '/rate', { score }); }
+
+  // --- Scammer management (admin) ---
+  async flagUser(userId, reason) { return await this.api('POST', '/admin/flag-user', { userId, reason }); }
+  async unflagUser(userId) { return await this.api('POST', '/admin/unflag-user', { userId }); }
+  async getFlaggedUsers() { return (await this.api('GET', '/admin/flagged-users')) || []; }
+
   // --- Blog ---
   async getBlogPosts() { return (await this.api('GET', '/blog')) || []; }
   async getBlogPost(slug) { return await this.api('GET', '/blog/' + slug); }

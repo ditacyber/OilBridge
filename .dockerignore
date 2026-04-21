@@ -1,0 +1,14 @@
+node_modules
+data
+.env
+.env.local
+*.env
+!.env.example
+.git
+.DS_Store
+*.log
+prospects.txt
+prospects.json
+prospects-raw.txt
+recipients.txt
+sent-log.txt

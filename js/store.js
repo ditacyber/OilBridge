@@ -141,6 +141,10 @@ class Store {
   async unflagUser(userId) { return await this.api('POST', '/admin/unflag-user', { userId }); }
   async getFlaggedUsers() { return (await this.api('GET', '/admin/flagged-users')) || []; }
 
+  // --- Backup ---
+  async downloadBackup() { return await this.api('GET', '/admin/backup'); }
+  async restoreBackup(data) { return await this.api('POST', '/admin/restore', data); }
+
   // --- Blog ---
   async getBlogPosts() { return (await this.api('GET', '/blog')) || []; }
   async getBlogPost(slug) { return await this.api('GET', '/blog/' + slug); }

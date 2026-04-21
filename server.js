@@ -1572,6 +1572,27 @@ function createApp() {
     });
   });
 
+  // ========== Backup/Restore API (admin only) ==========
+  app.get('/api/admin/backup', auth, adminOnly, (req, res) => {
+    const backup = createBackupPayload();
+    res.set('Content-Disposition', `attachment; filename="oilbridge-backup-${new Date().toISOString().split('T')[0]}.json"`);
+    res.json(backup);
+  });
+
+  app.post('/api/admin/restore', auth, adminOnly, (req, res) => {
+    try {
+      const backup = req.body;
+      if (!backup || !backup.tables) return res.status(400).json({ error: 'Invalid backup format' });
+      const count = restoreFromBackup(backup);
+      syncAdminPassword();
+      console.log(`[restore] Admin restored backup from ${backup.generatedAt || 'unknown'} — ${count} rows`);
+      res.json({ success: true, restoredRows: count });
+    } catch (err) {
+      console.error('[restore] Failed:', err.message);
+      res.status(500).json({ error: 'Restore failed: ' + err.message });
+    }
+  });
+
   // ========== Analytics API (admin only) ==========
   app.get('/api/admin/analytics', auth, adminOnly, (req, res) => {
     const days = Math.min(parseInt(req.query.days) || 30, 90);
@@ -1818,56 +1839,132 @@ ${items}
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const BACKUP_RETENTION_DAYS = parseInt(process.env.BACKUP_RETENTION_DAYS, 10) || 30;
 
+function createBackupPayload() {
+  return {
+    version: 2,
+    generatedAt: new Date().toISOString(),
+    tables: {
+      users:      queryAll('SELECT * FROM users'),
+      listings:   queryAll('SELECT * FROM listings'),
+      matches:    queryAll('SELECT * FROM matches'),
+      messages:   queryAll('SELECT * FROM messages'),
+      ratings:    queryAll('SELECT * FROM ratings'),
+      blog_posts: queryAll('SELECT * FROM blog_posts'),
+      page_views: queryAll('SELECT * FROM page_views ORDER BY id DESC LIMIT 10000')
+    }
+  };
+}
+
+function restoreFromBackup(backup) {
+  if (!backup || !backup.tables) throw new Error('Invalid backup format');
+  let restored = 0;
+
+  const insertRow = (table, row, cols) => {
+    const placeholders = cols.map(() => '?').join(',');
+    const values = cols.map(c => row[c] !== undefined ? row[c] : null);
+    try {
+      db.run(`INSERT OR IGNORE INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`, values);
+      restored++;
+    } catch (e) {}
+  };
+
+  if (backup.tables.users) {
+    for (const r of backup.tables.users) {
+      insertRow('users', r, ['id','email','password','role','company_name','company_reg','company_country','company_vat','contact_name','contact_phone','contact_position','kyc_status','nda_accepted','documents','created_at','ai_verification','ai_verified_at','stripe_identity_session_id','stripe_identity_status','flagged','flag_reason','flagged_at']);
+    }
+  }
+  if (backup.tables.listings) {
+    for (const r of backup.tables.listings) {
+      insertRow('listings', r, ['id','user_id','type','oil_type','quantity','unit','price','currency','delivery_location','delivery_date','notes','status','created_at']);
+    }
+  }
+  if (backup.tables.matches) {
+    for (const r of backup.tables.matches) {
+      insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','currency','commission_paid','stripe_session_id','evidence','created_at']);
+    }
+  }
+  if (backup.tables.messages) {
+    for (const r of backup.tables.messages) {
+      insertRow('messages', r, ['id','match_id','sender_id','body','blocked','blocked_reason','created_at']);
+    }
+  }
+  if (backup.tables.ratings) {
+    for (const r of backup.tables.ratings) {
+      insertRow('ratings', r, ['id','match_id','rater_id','rated_id','score','created_at']);
+    }
+  }
+  if (backup.tables.blog_posts) {
+    for (const r of backup.tables.blog_posts) {
+      insertRow('blog_posts', r, ['id','slug','title','excerpt','tag','icon','body','meta_title','meta_description','read_time','status','created_at']);
+    }
+  }
+  saveDb();
+  return restored;
+}
+
 function performBackup() {
   try {
     if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const dateStr = new Date().toISOString().split('T')[0];
     const filePath = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
-    const backup = {
-      version: 1,
-      generatedAt: new Date().toISOString(),
-      tables: {
-        users:    queryAll('SELECT * FROM users'),
-        listings: queryAll('SELECT * FROM listings'),
-        matches:  queryAll('SELECT * FROM matches'),
-        messages: queryAll('SELECT * FROM messages')
-        // sessions are excluded (ephemeral auth state)
-      }
-    };
-    // Write atomically
+    const backup = createBackupPayload();
     const tmp = filePath + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(backup, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(backup));
     fs.renameSync(tmp, filePath);
     const size = fs.statSync(filePath).size;
     console.log(`[backup] Wrote ${filePath} (${(size / 1024).toFixed(1)} KB)`);
 
-    // Rotate: keep the most recent N files
+    // Also push to external URL if configured
+    pushExternalBackup(backup);
+
     const files = fs.readdirSync(BACKUP_DIR)
       .filter(f => /^backup-\d{4}-\d{2}-\d{2}\.json$/.test(f))
       .sort()
       .reverse();
     for (let i = BACKUP_RETENTION_DAYS; i < files.length; i++) {
-      try { fs.unlinkSync(path.join(BACKUP_DIR, files[i])); console.log(`[backup] Removed ${files[i]}`); }
-      catch (err) { console.error(`[backup] Could not remove ${files[i]}:`, err.message); }
+      try { fs.unlinkSync(path.join(BACKUP_DIR, files[i])); }
+      catch (err) {}
     }
   } catch (err) {
     console.error('[backup] Failed:', err && err.stack ? err.stack : err);
   }
 }
 
-function scheduleBackups() {
-  // If today's backup doesn't exist yet, run one 10s after startup
+async function pushExternalBackup(backup) {
+  const url = process.env.BACKUP_URL;
+  if (!url) return;
   try {
-    const dateStr = new Date().toISOString().split('T')[0];
-    const todayFile = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
-    if (!fs.existsSync(todayFile)) setTimeout(performBackup, 10_000);
-  } catch {}
-  // Then check every hour whether we've already done today's backup
-  setInterval(() => {
-    const dateStr = new Date().toISOString().split('T')[0];
-    const todayFile = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
-    if (!fs.existsSync(todayFile)) performBackup();
-  }, 60 * 60 * 1000).unref();
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(backup)
+    });
+    console.log(`[backup] Pushed to external URL — status ${res.status}`);
+  } catch (err) {
+    console.error('[backup] External push failed:', err.message);
+  }
+}
+
+async function pullExternalBackup() {
+  const url = process.env.BACKUP_URL;
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) { console.log(`[backup] External pull returned ${res.status}`); return null; }
+    const data = await res.json();
+    if (data && data.tables) {
+      console.log(`[backup] Pulled external backup from ${data.generatedAt || 'unknown date'}`);
+      return data;
+    }
+  } catch (err) {
+    console.error('[backup] External pull failed:', err.message);
+  }
+  return null;
+}
+
+function scheduleBackups() {
+  setTimeout(performBackup, 10_000);
+  setInterval(performBackup, 15 * 60 * 1000).unref();
 }
 
 // ============================================================
@@ -1942,17 +2039,36 @@ async function sendStartupNotification() {
 (async () => {
   const SQL = await initSqlJs();
 
+  let freshDb = false;
   if (fs.existsSync(DB_PATH)) {
     const buffer = fs.readFileSync(DB_PATH);
     db = new SQL.Database(buffer);
     console.log('Loaded existing database.');
   } else {
     db = new SQL.Database();
+    freshDb = true;
     console.log('Created new database.');
   }
 
   initDatabase();
   syncAdminPassword();
+
+  // On a fresh database (typical after Railway redeploy), try to restore
+  // from external backup so user data is not lost.
+  if (freshDb) {
+    const extBackup = await pullExternalBackup();
+    if (extBackup) {
+      try {
+        const count = restoreFromBackup(extBackup);
+        syncAdminPassword();
+        console.log(`[startup] Restored ${count} rows from external backup (${extBackup.generatedAt})`);
+      } catch (err) {
+        console.error('[startup] External restore failed:', err.message);
+      }
+    } else {
+      console.log('[startup] No external backup found. Set BACKUP_URL env var for persistence across deploys.');
+    }
+  }
 
   // Uptime hooks BEFORE the listener so we don't miss a crash
   detectAndNotifyUncleanRestart();

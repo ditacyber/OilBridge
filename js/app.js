@@ -1298,7 +1298,13 @@
     main.innerHTML = `
       <section class="page-section">
         <div class="container">
-          <div class="section-header"><h2 data-i18n="admin_title">${esc(i18n.t('admin_title'))}</h2></div>
+          <div class="section-header" style="display:flex;justify-content:space-between;align-items:center">
+            <h2 data-i18n="admin_title">${esc(i18n.t('admin_title'))}</h2>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-ghost btn-sm" id="admin-backup-btn">Download Backup</button>
+              <label class="btn btn-ghost btn-sm" style="cursor:pointer">Restore Backup<input type="file" id="admin-restore-input" accept=".json" style="display:none"></label>
+            </div>
+          </div>
           <div class="admin-stats">
             <div class="admin-stat-card"><div class="admin-stat-value">${stats.totalUsers}</div><div class="admin-stat-label" data-i18n="admin_total_users">${esc(i18n.t('admin_total_users'))}</div></div>
             <div class="admin-stat-card"><div class="admin-stat-value">${stats.totalListings}</div><div class="admin-stat-label" data-i18n="admin_total_listings">${esc(i18n.t('admin_total_listings'))}</div></div>
@@ -1451,6 +1457,39 @@
     document.getElementById('admin-tabs').addEventListener('click', (e) => {
       const tab = e.target.closest('.tab');
       if (tab) { activeTab = tab.dataset.tab; renderTab(); }
+    });
+
+    document.getElementById('admin-backup-btn').addEventListener('click', async () => {
+      const data = await store.downloadBackup();
+      if (data && !data.error) {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'oilbridge-backup-' + new Date().toISOString().split('T')[0] + '.json';
+        a.click();
+        showToast('Backup downloaded', 'success');
+      } else {
+        showToast('Backup failed', 'error');
+      }
+    });
+
+    document.getElementById('admin-restore-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (!confirm('This will restore data from the backup file. Existing data will NOT be overwritten (INSERT OR IGNORE). Continue?')) return;
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const result = await store.restoreBackup(data);
+        if (result && result.success) {
+          showToast('Restored ' + result.restoredRows + ' rows', 'success');
+          renderTab();
+        } else {
+          showToast((result && result.error) || 'Restore failed', 'error');
+        }
+      } catch (err) {
+        showToast('Invalid backup file', 'error');
+      }
     });
 
     main.addEventListener('click', async (e) => {

@@ -1,7 +1,7 @@
 require('./load-env').loadEnv();
 
 const express = require('express');
-const initSqlJs = require('sql.js');
+const { Pool } = require('pg');
 const Stripe = require('stripe');
 const crypto = require('crypto');
 const path = require('path');
@@ -20,8 +20,6 @@ process.on('unhandledRejection', (reason) => {
 // ============================================================
 // Config
 // ============================================================
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const DB_PATH = path.join(DATA_DIR, 'oilbridge.db');
 const COMMISSION_RATE = 0.032;
 const EARLY_ADOPTER_RATE = 0.02;
 const EARLY_ADOPTER_LIMIT = 50;
@@ -37,41 +35,36 @@ else console.log('Stripe not configured — set STRIPE_SECRET_KEY to enable paym
 if (process.env.RESEND_API_KEY) console.log('Email notifications enabled (Resend).');
 else console.log('Email notifications not configured — set RESEND_API_KEY to enable real emails.');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+// ============================================================
+// PostgreSQL connection pool
+// ============================================================
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
+    ? { rejectUnauthorized: false }
+    : (process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : false)
+});
 
 // ============================================================
-// Database helpers (sql.js wrapper)
+// Database helpers (pg wrapper)
 // ============================================================
-let db;
-
-function saveDb() {
-  try {
-    const data = db.export();
-    // Atomic write: write to temp file, then rename
-    const tmp = DB_PATH + '.tmp';
-    fs.writeFileSync(tmp, Buffer.from(data));
-    fs.renameSync(tmp, DB_PATH);
-  } catch (err) {
-    console.error('[DB] saveDb failed:', err.message);
-  }
+function pgParams(sql) {
+  let i = 0;
+  return sql.replace(/\?/g, () => `$${++i}`);
 }
 
-function queryAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length) stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
+async function queryAll(sql, params = []) {
+  const result = await pool.query(pgParams(sql), params);
+  return result.rows;
 }
 
-function queryOne(sql, params = []) {
-  return queryAll(sql, params)[0] || null;
+async function queryOne(sql, params = []) {
+  const result = await pool.query(pgParams(sql), params);
+  return result.rows[0] || null;
 }
 
-function run(sql, params = []) {
-  db.run(sql, params);
-  saveDb();
+async function run(sql, params = []) {
+  await pool.query(pgParams(sql), params);
 }
 
 // ============================================================
@@ -104,7 +97,7 @@ function escXml(s) {
 // ============================================================
 // Row mappers
 // ============================================================
-function toUser(row) {
+async function toUser(row) {
   if (!row) return null;
   let kycDetails = null;
   try { if (row.ai_verification) kycDetails = JSON.parse(row.ai_verification); } catch {}
@@ -123,7 +116,7 @@ function toUser(row) {
     flagged: !!row.flagged,
     flagReason: row.flag_reason || null,
     createdAt: row.created_at,
-    ...getUserReputation(row.id)
+    ...(await getUserReputation(row.id))
   };
 }
 
@@ -157,37 +150,37 @@ function toMatch(row) {
 // reduced rate. Once that threshold is crossed, new matches use the standard
 // rate. The rate is locked in at match creation so users keep the price they
 // were quoted.
-function getCurrentCommissionRate() {
-  const row = queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND commission_paid = 1");
-  const completedCount = (row && row.c) || 0;
+async function getCurrentCommissionRate() {
+  const row = await queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND commission_paid = 1");
+  const completedCount = Number((row && row.c) || 0);
   return completedCount < EARLY_ADOPTER_LIMIT ? EARLY_ADOPTER_RATE : COMMISSION_RATE;
 }
 
-function getUserReputation(userId) {
-  const stats = queryOne(
+async function getUserReputation(userId) {
+  const stats = await queryOne(
     "SELECT COUNT(*) as count, COALESCE(AVG(score), 0) as avg FROM ratings WHERE rated_id = ?",
     [userId]
   );
-  const completedDeals = (queryOne(
+  const completedDeals = Number(((await queryOne(
     "SELECT COUNT(*) as c FROM matches WHERE (buyer_id = ? OR seller_id = ?) AND status = 'completed' AND commission_paid = 1",
     [userId, userId]
-  ) || {}).c || 0;
+  )) || {}).c || 0);
   let badge = null;
   if (completedDeals >= 10) badge = 'gold';
   else if (completedDeals >= 5) badge = 'silver';
   else if (completedDeals >= 1) badge = 'bronze';
   return {
-    rating: stats.count > 0 ? Math.round(stats.avg * 10) / 10 : null,
-    ratingCount: stats.count,
+    rating: Number(stats.count) > 0 ? Math.round(Number(stats.avg) * 10) / 10 : null,
+    ratingCount: Number(stats.count),
     completedDeals,
     badge
   };
 }
 
-function enrichListing(row) {
+async function enrichListing(row) {
   const l = toListing(row);
-  const seller = queryOne('SELECT id, company_name, company_country, flagged FROM users WHERE id = ?', [row.user_id]);
-  l.seller = seller ? { id: seller.id, companyName: seller.company_name, companyCountry: seller.company_country, ...getUserReputation(seller.id) } : null;
+  const seller = await queryOne('SELECT id, company_name, company_country, flagged FROM users WHERE id = ?', [row.user_id]);
+  l.seller = seller ? { id: seller.id, companyName: seller.company_name, companyCountry: seller.company_country, ...(await getUserReputation(seller.id)) } : null;
   return l;
 }
 
@@ -314,9 +307,9 @@ function toMessage(row) {
 // Snapshot all data relevant to a match at the moment of creation so we have
 // permanent chargeback evidence even if the listing is later deleted or the
 // parties' details change.
-function buildMatchEvidence(listingRow, buyerId, sellerId, quantity, price) {
-  const buyer = queryOne('SELECT id, email, company_name, company_reg, company_country, contact_name FROM users WHERE id = ?', [buyerId]);
-  const seller = queryOne('SELECT id, email, company_name, company_reg, company_country, contact_name FROM users WHERE id = ?', [sellerId]);
+async function buildMatchEvidence(listingRow, buyerId, sellerId, quantity, price) {
+  const buyer = await queryOne('SELECT id, email, company_name, company_reg, company_country, contact_name FROM users WHERE id = ?', [buyerId]);
+  const seller = await queryOne('SELECT id, email, company_name, company_reg, company_country, contact_name FROM users WHERE id = ?', [sellerId]);
   return {
     snapshotAt: new Date().toISOString(),
     listing: listingRow ? {
@@ -349,8 +342,8 @@ function buildMatchEvidence(listingRow, buyerId, sellerId, quantity, price) {
   };
 }
 
-function checkForMatches(newListing) {
-  const compatible = queryAll(
+async function checkForMatches(newListing) {
+  const compatible = await queryAll(
     "SELECT * FROM listings WHERE id != ? AND status = 'active' AND oil_type = ? AND type != ? AND user_id != ?",
     [newListing.id, newListing.oil_type, newListing.type, newListing.user_id]
   );
@@ -359,16 +352,16 @@ function checkForMatches(newListing) {
     const buy = isBuyer ? newListing : other;
     const sell = isBuyer ? other : newListing;
     if (buy.price >= sell.price) {
-      const existing = queryOne(
+      const existing = await queryOne(
         'SELECT id FROM matches WHERE buyer_id = ? AND seller_id = ? AND listing_id = ?',
         [buy.user_id, sell.user_id, sell.id]
       );
       if (!existing) {
         const qty = Math.min(buy.quantity, sell.quantity);
         const total = qty * sell.price;
-        const rate = getCurrentCommissionRate();
-        const evidence = buildMatchEvidence(sell, buy.user_id, sell.user_id, qty, sell.price);
-        run(
+        const rate = await getCurrentCommissionRate();
+        const evidence = await buildMatchEvidence(sell, buy.user_id, sell.user_id, qty, sell.price);
+        await run(
           `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, commission_rate, currency, created_at, evidence)
            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
           [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, total * rate, rate, sell.currency, new Date().toISOString(), JSON.stringify(evidence)]
@@ -381,8 +374,8 @@ function checkForMatches(newListing) {
 // ============================================================
 // Database init & seed
 // ============================================================
-function initDatabase() {
-  db.run(`CREATE TABLE IF NOT EXISTS users (
+async function initDatabase() {
+  await run(`CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user', company_name TEXT NOT NULL, company_reg TEXT NOT NULL,
     company_country TEXT NOT NULL, company_vat TEXT DEFAULT '', contact_name TEXT NOT NULL,
@@ -390,16 +383,16 @@ function initDatabase() {
     kyc_status TEXT NOT NULL DEFAULT 'pending', nda_accepted INTEGER NOT NULL DEFAULT 0,
     documents TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
   )`);
-  db.run(`CREATE TABLE IF NOT EXISTS sessions (
+  await run(`CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at TEXT NOT NULL
   )`);
-  db.run(`CREATE TABLE IF NOT EXISTS listings (
+  await run(`CREATE TABLE IF NOT EXISTS listings (
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, type TEXT NOT NULL, oil_type TEXT NOT NULL,
-    quantity REAL NOT NULL, unit TEXT NOT NULL, price REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'USD',
+    quantity DOUBLE PRECISION NOT NULL, unit TEXT NOT NULL, price DOUBLE PRECISION NOT NULL, currency TEXT NOT NULL DEFAULT 'USD',
     delivery_location TEXT NOT NULL, delivery_date TEXT NOT NULL, notes TEXT DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL
   )`);
-  db.run(`CREATE TABLE IF NOT EXISTS messages (
+  await run(`CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     match_id TEXT NOT NULL,
     sender_id TEXT NOT NULL,
@@ -408,33 +401,33 @@ function initDatabase() {
     blocked_reason TEXT,
     created_at TEXT NOT NULL
   )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_messages_match ON messages(match_id, created_at)`);
-  db.run(`CREATE TABLE IF NOT EXISTS matches (
+  await run('CREATE INDEX IF NOT EXISTS idx_messages_match ON messages(match_id, created_at)');
+  await run(`CREATE TABLE IF NOT EXISTS matches (
     id TEXT PRIMARY KEY, listing_id TEXT NOT NULL, buyer_id TEXT NOT NULL, seller_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending', quantity REAL NOT NULL, price_per_unit REAL NOT NULL,
-    total_value REAL NOT NULL, commission REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'USD',
+    status TEXT NOT NULL DEFAULT 'pending', quantity DOUBLE PRECISION NOT NULL, price_per_unit DOUBLE PRECISION NOT NULL,
+    total_value DOUBLE PRECISION NOT NULL, commission DOUBLE PRECISION NOT NULL, currency TEXT NOT NULL DEFAULT 'USD',
     created_at TEXT NOT NULL
   )`);
 
   // Migrate: add Stripe payment columns to matches
-  try { db.run('ALTER TABLE matches ADD COLUMN commission_paid INTEGER NOT NULL DEFAULT 0'); } catch(e) {}
-  try { db.run('ALTER TABLE matches ADD COLUMN stripe_session_id TEXT'); } catch(e) {}
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS commission_paid INTEGER NOT NULL DEFAULT 0');
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS stripe_session_id TEXT');
 
   // Migrate: add KYC verification columns to users
-  try { db.run('ALTER TABLE users ADD COLUMN ai_verification TEXT'); } catch(e) {}
-  try { db.run('ALTER TABLE users ADD COLUMN ai_verified_at TEXT'); } catch(e) {}
+  await run('ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_verification TEXT');
+  await run('ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_verified_at TEXT');
   // Migrate: add Stripe Identity columns (new KYC system)
-  try { db.run('ALTER TABLE users ADD COLUMN stripe_identity_session_id TEXT'); } catch(e) {}
-  try { db.run('ALTER TABLE users ADD COLUMN stripe_identity_status TEXT'); } catch(e) {}
+  await run('ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_identity_session_id TEXT');
+  await run('ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_identity_status TEXT');
 
   // Migrate: add chargeback-evidence column to matches (listing + parties snapshot)
-  try { db.run('ALTER TABLE matches ADD COLUMN evidence TEXT'); } catch(e) {}
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS evidence TEXT');
 
   // Migrate: add commission rate (for early-adopter pricing)
-  try { db.run('ALTER TABLE matches ADD COLUMN commission_rate REAL'); } catch(e) {}
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS commission_rate DOUBLE PRECISION');
 
   // Ratings table (post-deal reputation)
-  db.run(`CREATE TABLE IF NOT EXISTS ratings (
+  await run(`CREATE TABLE IF NOT EXISTS ratings (
     id TEXT PRIMARY KEY,
     match_id TEXT NOT NULL,
     rater_id TEXT NOT NULL,
@@ -443,16 +436,16 @@ function initDatabase() {
     created_at TEXT NOT NULL,
     UNIQUE(match_id, rater_id)
   )`);
-  db.run('CREATE INDEX IF NOT EXISTS idx_ratings_rated ON ratings(rated_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_ratings_rated ON ratings(rated_id)');
 
   // Scammer/flag columns on users
-  try { db.run("ALTER TABLE users ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0"); } catch(e) {}
-  try { db.run("ALTER TABLE users ADD COLUMN flag_reason TEXT"); } catch(e) {}
-  try { db.run("ALTER TABLE users ADD COLUMN flagged_at TEXT"); } catch(e) {}
+  await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged INTEGER NOT NULL DEFAULT 0");
+  await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS flag_reason TEXT");
+  await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged_at TEXT");
 
   // Analytics table (cookieless, GDPR-compliant)
-  db.run(`CREATE TABLE IF NOT EXISTS page_views (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+  await run(`CREATE TABLE IF NOT EXISTS page_views (
+    id SERIAL PRIMARY KEY,
     path TEXT NOT NULL,
     visitor_hash TEXT NOT NULL,
     referrer TEXT,
@@ -460,11 +453,11 @@ function initDatabase() {
     date TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`);
-  db.run('CREATE INDEX IF NOT EXISTS idx_pv_date ON page_views(date)');
-  db.run('CREATE INDEX IF NOT EXISTS idx_pv_path ON page_views(path, date)');
+  await run('CREATE INDEX IF NOT EXISTS idx_pv_date ON page_views(date)');
+  await run('CREATE INDEX IF NOT EXISTS idx_pv_path ON page_views(path, date)');
 
   // Blog posts table (for AI-generated weekly articles)
-  db.run(`CREATE TABLE IF NOT EXISTS blog_posts (
+  await run(`CREATE TABLE IF NOT EXISTS blog_posts (
     id TEXT PRIMARY KEY,
     slug TEXT UNIQUE NOT NULL,
     title TEXT NOT NULL,
@@ -478,21 +471,21 @@ function initDatabase() {
     status TEXT NOT NULL DEFAULT 'published',
     created_at TEXT NOT NULL
   )`);
-  db.run('CREATE INDEX IF NOT EXISTS idx_blog_slug ON blog_posts(slug)');
+  await run('CREATE INDEX IF NOT EXISTS idx_blog_slug ON blog_posts(slug)');
 
-  const count = queryOne('SELECT COUNT(*) as c FROM users');
-  if (count && count.c === 0) seedDatabase();
+  const count = await queryOne('SELECT COUNT(*) as c FROM users');
+  if (count && Number(count.c) === 0) await seedDatabase();
 
   // Seed blog articles from JSON if table is empty
-  const blogCount = queryOne('SELECT COUNT(*) as c FROM blog_posts');
-  if (blogCount && blogCount.c === 0) {
+  const blogCount = await queryOne('SELECT COUNT(*) as c FROM blog_posts');
+  if (blogCount && Number(blogCount.c) === 0) {
     try {
       const seedPath = path.join(__dirname, 'blog-seed-data.json');
       if (fs.existsSync(seedPath)) {
         const articles = JSON.parse(fs.readFileSync(seedPath, 'utf8'));
         for (const a of articles) {
-          db.run(
-            `INSERT OR IGNORE INTO blog_posts (id, slug, title, excerpt, tag, icon, body, meta_title, meta_description, read_time, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          await run(
+            `INSERT INTO blog_posts (id, slug, title, excerpt, tag, icon, body, meta_title, meta_description, read_time, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (slug) DO NOTHING`,
             [a.id, a.slug, a.title, a.excerpt, a.tag, a.icon || '&#128218;', a.body, a.meta_title, a.meta_description, a.read_time, a.status || 'published', a.created_at]
           );
         }
@@ -502,11 +495,9 @@ function initDatabase() {
       console.error('[blog] Failed to seed blog articles:', err.message);
     }
   }
-
-  saveDb();
 }
 
-function seedDatabase() {
+async function seedDatabase() {
   // Admin credentials come from env vars. If not set, we generate a
   // cryptographically random initial password and print it ONCE to the
   // server logs so the operator can capture it. The password is never
@@ -518,7 +509,7 @@ function seedDatabase() {
     adminPassword = crypto.randomBytes(18).toString('base64url');
     generated = true;
   }
-  db.run(
+  await run(
     'INSERT INTO users (id,email,password,role,company_name,company_reg,company_country,company_vat,contact_name,contact_phone,contact_position,kyc_status,nda_accepted,documents,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
     ['admin-001', adminEmail, hashPassword(adminPassword), 'admin', 'OilBridge', 'KVK-00000000', 'Netherlands', '', 'Platform Administrator', '', 'System Administrator', 'verified', 1, '[]', new Date().toISOString()]
   );
@@ -539,14 +530,14 @@ function seedDatabase() {
 
 // Rotate the admin password in place when ADMIN_PASSWORD env var changes.
 // Called on every startup after the DB is loaded.
-function syncAdminPassword() {
+async function syncAdminPassword() {
   if (!process.env.ADMIN_PASSWORD) return;
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@oilbridge.eu';
-  const admin = queryOne("SELECT id, password FROM users WHERE role = 'admin' AND email = ?", [adminEmail]);
+  const admin = await queryOne("SELECT id, password FROM users WHERE role = 'admin' AND email = ?", [adminEmail]);
   if (!admin) return;
   // Only re-hash and write if the current env password doesn't match the stored one
   if (!verifyPassword(process.env.ADMIN_PASSWORD, admin.password)) {
-    run('UPDATE users SET password = ? WHERE id = ?', [hashPassword(process.env.ADMIN_PASSWORD), admin.id]);
+    await run('UPDATE users SET password = ? WHERE id = ?', [hashPassword(process.env.ADMIN_PASSWORD), admin.id]);
     console.log(`[admin] Password rotated from ADMIN_PASSWORD env var (${adminEmail}).`);
   }
 }
@@ -574,7 +565,7 @@ async function generateBlogPost() {
     return null;
   }
 
-  const existing = queryAll("SELECT slug, title FROM blog_posts ORDER BY created_at DESC LIMIT 20");
+  const existing = await queryAll("SELECT slug, title FROM blog_posts ORDER BY created_at DESC LIMIT 20");
   const existingTitles = existing.map(r => r.title).join(', ');
   const topic = BLOG_TOPICS[Math.floor(Math.random() * BLOG_TOPICS.length)];
 
@@ -637,12 +628,12 @@ Article requirements:
       return null;
     }
 
-    if (queryOne('SELECT id FROM blog_posts WHERE slug = ?', [article.slug])) {
+    if (await queryOne('SELECT id FROM blog_posts WHERE slug = ?', [article.slug])) {
       article.slug += '-' + Date.now().toString(36);
     }
 
     const id = generateId('blog');
-    run(
+    await run(
       `INSERT INTO blog_posts (id, slug, title, excerpt, tag, body, meta_title, meta_description, read_time, status, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?)`,
       [id, article.slug, article.title, article.excerpt, article.tag || 'Industry',
@@ -703,11 +694,14 @@ async function pingIndexNow(url) {
 function createApp() {
   const app = express();
 
+  // Async route wrapper — forwards rejected promises to the error middleware
+  const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
   // Behind Railway's proxy — honor X-Forwarded-For so req.ip is the client IP
   app.set('trust proxy', 1);
 
   // --- Stripe webhook (needs raw body — must be before express.json) ---
-  app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  app.post('/api/payments/webhook', express.raw({ type: 'application/json' }), ah(async (req, res) => {
     if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) return res.status(503).json({ error: 'Stripe not configured' });
     const sig = req.headers['stripe-signature'];
     let event;
@@ -723,7 +717,7 @@ function createApp() {
         const session = event.data.object;
         const matchId = session.metadata && session.metadata.matchId;
         if (matchId) {
-          run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
+          await run('UPDATE matches SET commission_paid = 1, status = ? WHERE id = ?', ['completed', matchId]);
           console.log(`Commission paid for match ${matchId}`);
           sseBroadcast(matchId, 'deal_confirmed', { matchId, at: new Date().toISOString() });
         }
@@ -739,10 +733,10 @@ function createApp() {
             stripeSessionId: session.id,
             timestamp: new Date().toISOString()
           };
-          run('UPDATE users SET kyc_status = ?, stripe_identity_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
+          await run('UPDATE users SET kyc_status = ?, stripe_identity_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
               ['verified', 'verified', JSON.stringify(details), new Date().toISOString(), userId]);
           console.log(`[KYC] Stripe Identity verified for user ${userId}`);
-          const user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
+          const user = await queryOne('SELECT * FROM users WHERE id = ?', [userId]);
           if (user) sendKycResultEmail(user, 'verified', details.summary).catch(e => console.error('KYC email failed:', e.message));
         }
       }
@@ -758,10 +752,10 @@ function createApp() {
             lastError: session.last_error || null,
             timestamp: new Date().toISOString()
           };
-          run('UPDATE users SET kyc_status = ?, stripe_identity_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
+          await run('UPDATE users SET kyc_status = ?, stripe_identity_status = ?, ai_verification = ?, ai_verified_at = ? WHERE id = ?',
               ['rejected', 'requires_input', JSON.stringify(details), new Date().toISOString(), userId]);
           console.log(`[KYC] Stripe Identity requires input for user ${userId}: ${reason}`);
-          const user = queryOne('SELECT * FROM users WHERE id = ?', [userId]);
+          const user = await queryOne('SELECT * FROM users WHERE id = ?', [userId]);
           if (user) sendKycResultEmail(user, 'rejected', details.summary).catch(e => console.error('KYC email failed:', e.message));
         }
       }
@@ -769,7 +763,7 @@ function createApp() {
         const session = event.data.object;
         const userId = session.metadata && session.metadata.userId;
         if (userId) {
-          run('UPDATE users SET stripe_identity_status = ? WHERE id = ?', ['canceled', userId]);
+          await run('UPDATE users SET stripe_identity_status = ? WHERE id = ?', ['canceled', userId]);
           console.log(`[KYC] Stripe Identity canceled for user ${userId}`);
         }
       }
@@ -778,7 +772,7 @@ function createApp() {
       // Return 200 anyway so Stripe doesn't retry indefinitely — we've already logged the failure.
     }
     res.json({ received: true });
-  });
+  }));
 
   // 50MB limit to accommodate base64-encoded KYC documents (max 5 files x 5MB each)
   app.use(express.json({ limit: '50mb' }));
@@ -796,43 +790,39 @@ function createApp() {
   }
 
   // POST /api/analytics/pageview — called by the frontend on each route change
-  app.post('/api/analytics/pageview', (req, res) => {
+  app.post('/api/analytics/pageview', ah(async (req, res) => {
     try {
       const p = String(req.body.path || '/').slice(0, 200);
       const ref = String(req.body.referrer || '').slice(0, 500) || null;
       const hash = visitorHash(req);
       const now = new Date();
       const date = now.toISOString().split('T')[0];
-      db.run(
+      await run(
         'INSERT INTO page_views (path, visitor_hash, referrer, date, created_at) VALUES (?, ?, ?, ?, ?)',
         [p, hash, ref, date, now.toISOString()]
       );
-      saveDb();
     } catch (e) {}
     res.status(204).end();
-  });
-
-  // Async route wrapper — forwards rejected promises to the error middleware
-  const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+  }));
 
   // --- Auth middleware ---
-  function auth(req, res, next) {
+  async function auth(req, res, next) {
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
-    const session = queryOne('SELECT user_id FROM sessions WHERE token = ?', [header.slice(7)]);
+    const session = await queryOne('SELECT user_id FROM sessions WHERE token = ?', [header.slice(7)]);
     if (!session) return res.status(401).json({ error: 'Invalid session' });
-    const user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
+    const user = await queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
     if (!user) return res.status(401).json({ error: 'User not found' });
     if (user.flagged) return res.status(403).json({ error: 'Your account has been suspended. Contact contact@oilbridge.eu for information.', code: 'account_flagged' });
     req.user = user;
     next();
   }
 
-  function optionalAuth(req, res, next) {
+  async function optionalAuth(req, res, next) {
     const header = req.headers.authorization;
     if (header && header.startsWith('Bearer ')) {
-      const session = queryOne('SELECT user_id FROM sessions WHERE token = ?', [header.slice(7)]);
-      if (session) req.user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
+      const session = await queryOne('SELECT user_id FROM sessions WHERE token = ?', [header.slice(7)]);
+      if (session) req.user = await queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
     }
     next();
   }
@@ -900,7 +890,7 @@ function createApp() {
   // ========== Auth Routes ==========
   // Registration no longer collects KYC documents — identity is verified
   // via Stripe Identity after the account is created (see /api/kyc/start).
-  app.post('/api/auth/register', registrationRateLimit, (req, res) => {
+  app.post('/api/auth/register', registrationRateLimit, ah(async (req, res) => {
     const { email, password, companyName, companyReg, companyCountry, companyVat, contactName, contactPhone, contactPosition, ndaAccepted } = req.body;
     if (!email || !password || !companyName || !companyReg || !companyCountry || !contactName) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -913,38 +903,38 @@ function createApp() {
       });
     }
     if (!ndaAccepted) return res.status(400).json({ error: 'You must accept the NDA to register' });
-    if (queryOne('SELECT id FROM users WHERE email = ?', [email])) {
+    if (await queryOne('SELECT id FROM users WHERE email = ?', [email])) {
       return res.status(409).json({ error: 'Email already registered.' });
     }
     const id = generateId('user');
-    run(
+    await run(
       `INSERT INTO users (id,email,password,role,company_name,company_reg,company_country,company_vat,contact_name,contact_phone,contact_position,kyc_status,nda_accepted,documents,created_at)
        VALUES (?,?,?,'user',?,?,?,?,?,?,?,'pending',?,'[]',?)`,
       [id, email, hashPassword(password), companyName, companyReg, companyCountry, companyVat||'', contactName, contactPhone||'', contactPosition||'', ndaAccepted?1:0, new Date().toISOString()]
     );
-    res.status(201).json({ success: true, user: toUser(queryOne('SELECT * FROM users WHERE id = ?', [id])) });
-  });
+    res.status(201).json({ success: true, user: await toUser(await queryOne('SELECT * FROM users WHERE id = ?', [id])) });
+  }));
 
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', ah(async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    const user = queryOne('SELECT * FROM users WHERE email = ?', [email]);
+    const user = await queryOne('SELECT * FROM users WHERE email = ?', [email]);
     if (!user || !verifyPassword(password, user.password)) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     const token = generateToken();
-    run('INSERT INTO sessions (token,user_id,created_at) VALUES (?,?,?)', [token, user.id, new Date().toISOString()]);
-    res.json({ token, user: toUser(user) });
-  });
+    await run('INSERT INTO sessions (token,user_id,created_at) VALUES (?,?,?)', [token, user.id, new Date().toISOString()]);
+    res.json({ token, user: await toUser(user) });
+  }));
 
-  app.get('/api/auth/me', auth, (req, res) => {
-    res.json(toUser(req.user));
-  });
+  app.get('/api/auth/me', ah(async (req, res, next) => { await auth(req, res, () => {}); if (!req.user) return; res.json(await toUser(req.user)); }));
 
-  app.post('/api/auth/logout', auth, (req, res) => {
-    run('DELETE FROM sessions WHERE token = ?', [req.headers.authorization.slice(7)]);
+  app.post('/api/auth/logout', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    await run('DELETE FROM sessions WHERE token = ?', [req.headers.authorization.slice(7)]);
     res.json({ success: true });
-  });
+  }));
 
   // ========== User Routes ==========
   // Strip large dataUrl content from documents in list responses (kept only on GET /:id)
@@ -958,39 +948,49 @@ function createApp() {
     return user;
   }
 
-  app.get('/api/users', auth, adminOnly, (req, res) => {
+  app.get('/api/users', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     const status = req.query.status;
     const rows = status
-      ? queryAll("SELECT * FROM users WHERE role != 'admin' AND kyc_status = ? ORDER BY created_at DESC", [status])
-      : queryAll("SELECT * FROM users WHERE role != 'admin' ORDER BY created_at DESC");
-    res.json(rows.map(r => stripDocContent(toUser(r))));
-  });
+      ? await queryAll("SELECT * FROM users WHERE role != 'admin' AND kyc_status = ? ORDER BY created_at DESC", [status])
+      : await queryAll("SELECT * FROM users WHERE role != 'admin' ORDER BY created_at DESC");
+    const users = [];
+    for (const r of rows) users.push(stripDocContent(await toUser(r)));
+    res.json(users);
+  }));
 
-  app.get('/api/users/:id', auth, (req, res) => {
+  app.get('/api/users/:id', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     if (req.user.role !== 'admin' && req.user.id !== req.params.id) return res.status(403).json({ error: 'Forbidden' });
-    const user = queryOne('SELECT * FROM users WHERE id = ?', [req.params.id]);
+    const user = await queryOne('SELECT * FROM users WHERE id = ?', [req.params.id]);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(toUser(user));
-  });
+    res.json(await toUser(user));
+  }));
 
-  app.patch('/api/users/:id', auth, (req, res) => {
+  app.patch('/api/users/:id', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     const targetId = req.params.id;
     const isAdmin = req.user.role === 'admin';
     const isSelf = req.user.id === targetId;
     if (!isAdmin && !isSelf) return res.status(403).json({ error: 'Forbidden' });
-    if (!queryOne('SELECT id FROM users WHERE id = ?', [targetId])) return res.status(404).json({ error: 'User not found' });
+    if (!(await queryOne('SELECT id FROM users WHERE id = ?', [targetId]))) return res.status(404).json({ error: 'User not found' });
 
     const u = req.body;
-    if (u.kycStatus && isAdmin) run('UPDATE users SET kyc_status = ? WHERE id = ?', [u.kycStatus, targetId]);
-    if (u.contactName && isSelf) run('UPDATE users SET contact_name = ? WHERE id = ?', [u.contactName, targetId]);
-    if (u.contactPhone !== undefined && isSelf) run('UPDATE users SET contact_phone = ? WHERE id = ?', [u.contactPhone, targetId]);
-    if (u.contactPosition !== undefined && isSelf) run('UPDATE users SET contact_position = ? WHERE id = ?', [u.contactPosition, targetId]);
+    if (u.kycStatus && isAdmin) await run('UPDATE users SET kyc_status = ? WHERE id = ?', [u.kycStatus, targetId]);
+    if (u.contactName && isSelf) await run('UPDATE users SET contact_name = ? WHERE id = ?', [u.contactName, targetId]);
+    if (u.contactPhone !== undefined && isSelf) await run('UPDATE users SET contact_phone = ? WHERE id = ?', [u.contactPhone, targetId]);
+    if (u.contactPosition !== undefined && isSelf) await run('UPDATE users SET contact_position = ? WHERE id = ?', [u.contactPosition, targetId]);
 
-    res.json(toUser(queryOne('SELECT * FROM users WHERE id = ?', [targetId])));
-  });
+    res.json(await toUser(await queryOne('SELECT * FROM users WHERE id = ?', [targetId])));
+  }));
 
   // ========== Listing Routes ==========
-  app.get('/api/listings', optionalAuth, (req, res) => {
+  app.get('/api/listings', ah(async (req, res, next) => {
+    await optionalAuth(req, res, () => {});
     const { type, oilType, search, sort, userId, limit } = req.query;
     const showAll = req.query.all === 'true';
     let sql = 'SELECT * FROM listings WHERE 1=1';
@@ -1007,103 +1007,120 @@ function createApp() {
       default: sql += ' ORDER BY created_at DESC';
     }
     if (limit) { sql += ' LIMIT ?'; params.push(parseInt(limit)); }
-    res.json(queryAll(sql, params).map(enrichListing));
-  });
+    const rows = await queryAll(sql, params);
+    const enriched = [];
+    for (const row of rows) enriched.push(await enrichListing(row));
+    res.json(enriched);
+  }));
 
-  app.get('/api/listings/:id', optionalAuth, (req, res) => {
-    const row = queryOne('SELECT * FROM listings WHERE id = ?', [req.params.id]);
+  app.get('/api/listings/:id', ah(async (req, res, next) => {
+    await optionalAuth(req, res, () => {});
+    const row = await queryOne('SELECT * FROM listings WHERE id = ?', [req.params.id]);
     if (!row) return res.status(404).json({ error: 'Listing not found' });
-    res.json(enrichListing(row));
-  });
+    res.json(await enrichListing(row));
+  }));
 
-  app.post('/api/listings', auth, verifiedOnly, (req, res) => {
+  app.post('/api/listings', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.kyc_status !== 'verified') return res.status(403).json({ error: 'Verified users only' });
     const { type, oilType, quantity, unit, price, currency, deliveryLocation, deliveryDate, notes } = req.body;
     if (!type || !oilType || !quantity || !unit || !price || !deliveryLocation || !deliveryDate) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
     const id = generateId('lst');
-    run(
+    await run(
       "INSERT INTO listings (id,user_id,type,oil_type,quantity,unit,price,currency,delivery_location,delivery_date,notes,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'active',?)",
       [id, req.user.id, type, oilType, parseFloat(quantity), unit, parseFloat(price), currency||'USD', deliveryLocation, deliveryDate, notes||'', new Date().toISOString()]
     );
-    const listing = queryOne('SELECT * FROM listings WHERE id = ?', [id]);
-    checkForMatches(listing);
-    res.status(201).json({ success: true, listing: enrichListing(listing) });
+    const listing = await queryOne('SELECT * FROM listings WHERE id = ?', [id]);
+    await checkForMatches(listing);
+    res.status(201).json({ success: true, listing: await enrichListing(listing) });
     const siteUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
     pingIndexNow(`${siteUrl}/#listing/${id}`);
-  });
+  }));
 
   // ========== Match Routes ==========
-  app.get('/api/matches', auth, (req, res) => {
+  app.get('/api/matches', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     const userId = req.user.id;
-    const rows = queryAll('SELECT * FROM matches WHERE buyer_id = ? OR seller_id = ? ORDER BY created_at DESC', [userId, userId]);
-    const enriched = rows.map(m => {
-      const listing = queryOne('SELECT oil_type, unit FROM listings WHERE id = ?', [m.listing_id]);
+    const rows = await queryAll('SELECT * FROM matches WHERE buyer_id = ? OR seller_id = ? ORDER BY created_at DESC', [userId, userId]);
+    const enriched = [];
+    for (const m of rows) {
+      const listing = await queryOne('SELECT oil_type, unit FROM listings WHERE id = ?', [m.listing_id]);
       const isAccepted = m.status === 'accepted' || m.status === 'completed';
       const cpId = m.buyer_id === userId ? m.seller_id : m.buyer_id;
       let counterparty = null;
       if (isAccepted) {
         // SECURITY: never expose contact_name / email / contact_phone to the counterparty —
         // all coordination must go through OilBridge chat, including after payment.
-        const cp = queryOne('SELECT company_name, company_country FROM users WHERE id = ?', [cpId]);
+        const cp = await queryOne('SELECT company_name, company_country FROM users WHERE id = ?', [cpId]);
         if (cp) counterparty = { companyName: cp.company_name, companyCountry: cp.company_country };
       }
-      return {
+      enriched.push({
         ...toMatch(m),
         dealRef: 'OB-' + String(m.id).slice(-8).toUpperCase(),
         listing: listing ? { oilType: listing.oil_type, unit: listing.unit } : null,
         counterparty
-      };
-    });
+      });
+    }
     res.json(enriched);
-  });
+  }));
 
-  app.post('/api/matches', auth, verifiedOnly, (req, res) => {
+  app.post('/api/matches', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.kyc_status !== 'verified') return res.status(403).json({ error: 'Verified users only' });
     const { listingId } = req.body;
-    const listing = queryOne('SELECT * FROM listings WHERE id = ?', [listingId]);
+    const listing = await queryOne('SELECT * FROM listings WHERE id = ?', [listingId]);
     if (!listing) return res.status(404).json({ error: 'Listing not found' });
     if (listing.user_id === req.user.id) return res.status(400).json({ error: 'Cannot match own listing' });
     const isBuyer = listing.type === 'sell';
     const buyerId = isBuyer ? req.user.id : listing.user_id;
     const sellerId = isBuyer ? listing.user_id : req.user.id;
-    if (queryOne('SELECT id FROM matches WHERE buyer_id = ? AND seller_id = ? AND listing_id = ?', [buyerId, sellerId, listing.id])) {
+    if (await queryOne('SELECT id FROM matches WHERE buyer_id = ? AND seller_id = ? AND listing_id = ?', [buyerId, sellerId, listing.id])) {
       return res.status(409).json({ error: 'Match already exists' });
     }
     const total = listing.quantity * listing.price;
-    const rate = getCurrentCommissionRate();
-    const evidence = buildMatchEvidence(listing, buyerId, sellerId, listing.quantity, listing.price);
-    run(
+    const rate = await getCurrentCommissionRate();
+    const evidence = await buildMatchEvidence(listing, buyerId, sellerId, listing.quantity, listing.price);
+    await run(
       "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,commission_rate,currency,created_at,evidence) VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?,?)",
       [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, total*rate, rate, listing.currency, new Date().toISOString(), JSON.stringify(evidence)]
     );
     res.status(201).json({ success: true });
-  });
+  }));
 
-  app.patch('/api/matches/:id', auth, (req, res) => {
-    const match = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+  app.patch('/api/matches/:id', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    const match = await queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
     if (!match) return res.status(404).json({ error: 'Match not found' });
     if (match.buyer_id !== req.user.id && match.seller_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
     const { status } = req.body;
     if (status && ['accepted','declined','completed'].includes(status)) {
-      run('UPDATE matches SET status = ? WHERE id = ?', [status, req.params.id]);
+      await run('UPDATE matches SET status = ? WHERE id = ?', [status, req.params.id]);
     }
     res.json({ success: true });
-  });
+  }));
 
   // ========== Chat Routes ==========
   // Helper: ensure user is a participant in the match
-  function getMatchAsParticipant(matchId, userId) {
-    const m = queryOne('SELECT * FROM matches WHERE id = ?', [matchId]);
+  async function getMatchAsParticipant(matchId, userId) {
+    const m = await queryOne('SELECT * FROM matches WHERE id = ?', [matchId]);
     if (!m) return { error: 'Match not found', code: 404 };
     if (m.buyer_id !== userId && m.seller_id !== userId) return { error: 'Forbidden', code: 403 };
     return { match: m };
   }
 
   // GET /api/matches/:id/messages — chat history for participants
-  app.get('/api/matches/:id/messages', auth, (req, res) => {
-    const r = getMatchAsParticipant(req.params.id, req.user.id);
+  app.get('/api/matches/:id/messages', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    const r = await getMatchAsParticipant(req.params.id, req.user.id);
     if (r.error) return res.status(r.code).json({ error: r.error });
-    const rows = queryAll(
+    const rows = await queryAll(
       'SELECT * FROM messages WHERE match_id = ? AND blocked = 0 ORDER BY created_at ASC',
       [req.params.id]
     );
@@ -1111,11 +1128,13 @@ function createApp() {
       match: { id: r.match.id, status: r.match.status, commissionPaid: !!r.match.commission_paid },
       messages: rows.map(toMessage)
     });
-  });
+  }));
 
   // POST /api/matches/:id/messages — send a message
-  app.post('/api/matches/:id/messages', auth, ah(async (req, res) => {
-    const r = getMatchAsParticipant(req.params.id, req.user.id);
+  app.post('/api/matches/:id/messages', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    const r = await getMatchAsParticipant(req.params.id, req.user.id);
     if (r.error) return res.status(r.code).json({ error: r.error });
     // Chat stays open on accepted AND completed matches — all logistics coordination happens here,
     // including post-payment delivery arrangements. Contact details are never revealed.
@@ -1131,7 +1150,7 @@ function createApp() {
     const id = generateId('msg');
     const createdAt = new Date().toISOString();
 
-    run(
+    await run(
       'INSERT INTO messages (id, match_id, sender_id, body, blocked, blocked_reason, created_at) VALUES (?,?,?,?,?,?,?)',
       [id, req.params.id, req.user.id, body, blockedReason ? 1 : 0, blockedReason || null, createdAt]
     );
@@ -1145,14 +1164,14 @@ function createApp() {
       });
     }
 
-    const message = toMessage(queryOne('SELECT * FROM messages WHERE id = ?', [id]));
+    const message = toMessage(await queryOne('SELECT * FROM messages WHERE id = ?', [id]));
     sseBroadcast(req.params.id, 'message', message);
     res.status(201).json({ success: true, message });
 
     // Email notification to recipient (fire-and-forget)
     const recipientId = r.match.buyer_id === req.user.id ? r.match.seller_id : r.match.buyer_id;
-    const sender = queryOne('SELECT company_name FROM users WHERE id = ?', [req.user.id]);
-    const recipient = queryOne('SELECT email, contact_name FROM users WHERE id = ?', [recipientId]);
+    const sender = await queryOne('SELECT company_name FROM users WHERE id = ?', [req.user.id]);
+    const recipient = await queryOne('SELECT email, contact_name FROM users WHERE id = ?', [recipientId]);
     if (recipient && recipient.email) {
       const baseUrl = process.env.SITE_URL || `${req.protocol}://${req.get('host')}`;
       sendEmail({
@@ -1171,15 +1190,15 @@ function createApp() {
   }));
 
   // GET /api/matches/:id/stream — SSE for live updates (token via query param since EventSource lacks headers)
-  app.get('/api/matches/:id/stream', (req, res) => {
+  app.get('/api/matches/:id/stream', ah(async (req, res) => {
     try {
       const token = req.query.token;
-      const session = token ? queryOne('SELECT user_id FROM sessions WHERE token = ?', [token]) : null;
+      const session = token ? await queryOne('SELECT user_id FROM sessions WHERE token = ?', [token]) : null;
       if (!session) return res.status(401).end();
-      const user = queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
+      const user = await queryOne('SELECT * FROM users WHERE id = ?', [session.user_id]);
       if (!user) return res.status(401).end();
 
-      const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+      const m = await queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
       if (!m) return res.status(404).end();
       if (m.buyer_id !== user.id && m.seller_id !== user.id && user.role !== 'admin') return res.status(403).end();
 
@@ -1209,11 +1228,14 @@ function createApp() {
         else res.end();
       } catch {}
     }
-  });
+  }));
 
   // GET /api/admin/chats — overview of all chat threads
-  app.get('/api/admin/chats', auth, adminOnly, (req, res) => {
-    const rows = queryAll(`
+  app.get('/api/admin/chats', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const rows = await queryAll(`
       SELECT m.id as match_id, m.status, m.commission_paid,
              m.buyer_id, m.seller_id,
              COUNT(msg.id) as msg_count,
@@ -1221,49 +1243,56 @@ function createApp() {
              MAX(msg.created_at) as last_at
       FROM matches m
       LEFT JOIN messages msg ON msg.match_id = m.id
-      GROUP BY m.id
+      GROUP BY m.id, m.status, m.commission_paid, m.buyer_id, m.seller_id
       HAVING COUNT(msg.id) > 0
       ORDER BY last_at DESC
     `);
-    const enriched = rows.map(r => {
-      const buyer = queryOne('SELECT company_name FROM users WHERE id = ?', [r.buyer_id]);
-      const seller = queryOne('SELECT company_name FROM users WHERE id = ?', [r.seller_id]);
-      return {
+    const enriched = [];
+    for (const r of rows) {
+      const buyer = await queryOne('SELECT company_name FROM users WHERE id = ?', [r.buyer_id]);
+      const seller = await queryOne('SELECT company_name FROM users WHERE id = ?', [r.seller_id]);
+      enriched.push({
         matchId: r.match_id, status: r.status, commissionPaid: !!r.commission_paid,
         buyer: buyer ? buyer.company_name : null, seller: seller ? seller.company_name : null,
-        messageCount: r.msg_count, blockedCount: r.blocked_count || 0,
+        messageCount: Number(r.msg_count), blockedCount: Number(r.blocked_count || 0),
         lastMessageAt: r.last_at
-      };
-    });
+      });
+    }
     res.json(enriched);
-  });
+  }));
 
   // GET /api/admin/chats/:matchId — full chat including blocked messages
-  app.get('/api/admin/chats/:matchId', auth, adminOnly, (req, res) => {
-    const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.matchId]);
+  app.get('/api/admin/chats/:matchId', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const m = await queryOne('SELECT * FROM matches WHERE id = ?', [req.params.matchId]);
     if (!m) return res.status(404).json({ error: 'Match not found' });
-    const messages = queryAll('SELECT * FROM messages WHERE match_id = ? ORDER BY created_at ASC', [req.params.matchId]).map(toMessage);
-    const buyer = queryOne('SELECT company_name, contact_name, email FROM users WHERE id = ?', [m.buyer_id]);
-    const seller = queryOne('SELECT company_name, contact_name, email FROM users WHERE id = ?', [m.seller_id]);
+    const messages = (await queryAll('SELECT * FROM messages WHERE match_id = ? ORDER BY created_at ASC', [req.params.matchId])).map(toMessage);
+    const buyer = await queryOne('SELECT company_name, contact_name, email FROM users WHERE id = ?', [m.buyer_id]);
+    const seller = await queryOne('SELECT company_name, contact_name, email FROM users WHERE id = ?', [m.seller_id]);
     res.json({
       match: { id: m.id, status: m.status, commissionPaid: !!m.commission_paid, buyerId: m.buyer_id, sellerId: m.seller_id },
       buyer, seller, messages
     });
-  });
+  }));
 
   // GET /api/admin/matches/:id/evidence — full chargeback-protection bundle.
   // Combines the at-creation snapshot (listing + both parties frozen at
   // match time) with the complete chat transcript, payment metadata, and
   // current-state info. Suitable for exporting to a payment processor
   // during a chargeback dispute.
-  app.get('/api/admin/matches/:id/evidence', auth, adminOnly, (req, res) => {
-    const m = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+  app.get('/api/admin/matches/:id/evidence', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const m = await queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
     if (!m) return res.status(404).json({ error: 'Match not found' });
     let snapshot = null;
     try { if (m.evidence) snapshot = JSON.parse(m.evidence); } catch {}
-    const messages = queryAll('SELECT * FROM messages WHERE match_id = ? ORDER BY created_at ASC', [m.id]).map(toMessage);
-    const currentBuyer = queryOne('SELECT company_name, contact_name, email, company_country FROM users WHERE id = ?', [m.buyer_id]);
-    const currentSeller = queryOne('SELECT company_name, contact_name, email, company_country FROM users WHERE id = ?', [m.seller_id]);
+    const messages = (await queryAll('SELECT * FROM messages WHERE match_id = ? ORDER BY created_at ASC', [m.id])).map(toMessage);
+    const currentBuyer = await queryOne('SELECT company_name, contact_name, email, company_country FROM users WHERE id = ?', [m.buyer_id]);
+    const currentSeller = await queryOne('SELECT company_name, contact_name, email, company_country FROM users WHERE id = ?', [m.seller_id]);
     res.json({
       evidenceExport: {
         exportedAt: new Date().toISOString(),
@@ -1284,15 +1313,17 @@ function createApp() {
         chatTranscript: messages   // full message history, blocked entries included
       }
     });
-  });
+  }));
 
   // ========== Stripe Payment Routes ==========
-  app.post('/api/payments/create-session', auth, ah(async (req, res) => {
+  app.post('/api/payments/create-session', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     if (!stripe) return res.status(503).json({ error: 'Stripe is not configured. Set the STRIPE_SECRET_KEY environment variable.' });
     const { matchId } = req.body;
     if (!matchId) return res.status(400).json({ error: 'matchId is required' });
 
-    const match = queryOne('SELECT * FROM matches WHERE id = ?', [matchId]);
+    const match = await queryOne('SELECT * FROM matches WHERE id = ?', [matchId]);
     if (!match) return res.status(404).json({ error: 'Match not found' });
     if (match.buyer_id !== req.user.id && match.seller_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
     if (match.status !== 'accepted') return res.status(400).json({ error: 'Match must be accepted before payment' });
@@ -1322,7 +1353,7 @@ function createApp() {
         cancel_url: `${baseUrl}/#matches`,
       });
 
-      run('UPDATE matches SET stripe_session_id = ? WHERE id = ?', [session.id, match.id]);
+      await run('UPDATE matches SET stripe_session_id = ? WHERE id = ?', [session.id, match.id]);
       res.json({ url: session.url, sessionId: session.id });
     } catch (err) {
       console.error('Stripe session creation failed:', err.message);
@@ -1330,14 +1361,16 @@ function createApp() {
     }
   }));
 
-  app.get('/api/payments/verify-session', auth, ah(async (req, res) => {
+  app.get('/api/payments/verify-session', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     if (!stripe) return res.status(503).json({ error: 'Stripe not configured' });
     const { session_id } = req.query;
     if (!session_id) return res.status(400).json({ error: 'session_id required' });
     try {
       const session = await stripe.checkout.sessions.retrieve(session_id);
       const matchId = session.metadata && session.metadata.matchId;
-      const match = matchId ? queryOne('SELECT * FROM matches WHERE id = ?', [matchId]) : null;
+      const match = matchId ? await queryOne('SELECT * FROM matches WHERE id = ?', [matchId]) : null;
       res.json({
         status: session.payment_status,
         matchId,
@@ -1370,7 +1403,9 @@ function createApp() {
   // POST /api/kyc/start — creates a Stripe Identity VerificationSession and
   // returns the hosted URL the client should redirect to. Falls back to
   // document upload if Stripe Identity isn't enabled on the account.
-  app.post('/api/kyc/start', auth, ah(async (req, res) => {
+  app.post('/api/kyc/start', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     if (!stripe) {
       console.warn('[KYC] /api/kyc/start called but STRIPE_SECRET_KEY is not set');
       return res.status(503).json({
@@ -1407,7 +1442,7 @@ function createApp() {
         return_url: `${baseUrl}/#kyc-complete`
       });
 
-      run('UPDATE users SET stripe_identity_session_id = ?, stripe_identity_status = ? WHERE id = ?',
+      await run('UPDATE users SET stripe_identity_session_id = ?, stripe_identity_status = ? WHERE id = ?',
           [session.id, session.status, req.user.id]);
 
       console.log(`[KYC] Stripe Identity session ${session.id} created for ${req.user.email}`);
@@ -1446,7 +1481,9 @@ function createApp() {
   // POST /api/kyc/upload — manual document upload fallback for cases where
   // Stripe Identity isn't available. Documents are stored and reviewed by
   // an admin.
-  app.post('/api/kyc/upload', auth, ah(async (req, res) => {
+  app.post('/api/kyc/upload', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
     if (req.user.kyc_status === 'verified') {
       return res.status(400).json({ error: 'Already verified' });
     }
@@ -1470,7 +1507,7 @@ function createApp() {
       if (typeof d.dataUrl !== 'string' || !d.dataUrl.startsWith('data:')) return res.status(400).json({ error: `${d.name}: invalid content` });
     }
 
-    run('UPDATE users SET documents = ?, kyc_status = ? WHERE id = ?',
+    await run('UPDATE users SET documents = ?, kyc_status = ? WHERE id = ?',
         [JSON.stringify(documents), 'pending', req.user.id]);
 
     console.log(`[KYC] Manual upload: ${req.user.email} submitted ${documents.length} document(s) for admin review`);
@@ -1482,8 +1519,10 @@ function createApp() {
 
   // GET /api/kyc/status — returns the caller's current KYC status (for polling
   // after the user returns from the Stripe-hosted flow).
-  app.get('/api/kyc/status', auth, (req, res) => {
-    const u = queryOne('SELECT kyc_status, stripe_identity_status, stripe_identity_session_id, ai_verification, documents FROM users WHERE id = ?', [req.user.id]);
+  app.get('/api/kyc/status', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    const u = await queryOne('SELECT kyc_status, stripe_identity_status, stripe_identity_session_id, ai_verification, documents FROM users WHERE id = ?', [req.user.id]);
     let reason = null;
     try {
       if (u && u.ai_verification) {
@@ -1500,159 +1539,182 @@ function createApp() {
       reason,
       hasManualUpload: docCount > 0
     });
-  });
+  }));
 
   // ========== Ratings ==========
   // POST /api/matches/:id/rate — rate counterparty after a completed deal
-  app.post('/api/matches/:id/rate', auth, (req, res) => {
-    const match = queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
+  app.post('/api/matches/:id/rate', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    const match = await queryOne('SELECT * FROM matches WHERE id = ?', [req.params.id]);
     if (!match) return res.status(404).json({ error: 'Match not found' });
     if (match.buyer_id !== req.user.id && match.seller_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
     if (match.status !== 'completed' || !match.commission_paid) return res.status(400).json({ error: 'Can only rate completed deals' });
     const score = parseInt(req.body.score);
     if (!score || score < 1 || score > 5) return res.status(400).json({ error: 'Score must be 1-5' });
     const ratedId = match.buyer_id === req.user.id ? match.seller_id : match.buyer_id;
-    const existing = queryOne('SELECT id FROM ratings WHERE match_id = ? AND rater_id = ?', [match.id, req.user.id]);
+    const existing = await queryOne('SELECT id FROM ratings WHERE match_id = ? AND rater_id = ?', [match.id, req.user.id]);
     if (existing) return res.status(409).json({ error: 'Already rated this deal' });
-    run(
+    await run(
       'INSERT INTO ratings (id, match_id, rater_id, rated_id, score, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [generateId('rat'), match.id, req.user.id, ratedId, score, new Date().toISOString()]
     );
-    res.json({ success: true, reputation: getUserReputation(ratedId) });
-  });
+    res.json({ success: true, reputation: await getUserReputation(ratedId) });
+  }));
 
   // GET /api/users/:id/reputation — public reputation data
-  app.get('/api/users/:id/reputation', (req, res) => {
-    const user = queryOne('SELECT id, flagged FROM users WHERE id = ?', [req.params.id]);
+  app.get('/api/users/:id/reputation', ah(async (req, res) => {
+    const user = await queryOne('SELECT id, flagged FROM users WHERE id = ?', [req.params.id]);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(getUserReputation(user.id));
-  });
+    res.json(await getUserReputation(user.id));
+  }));
 
   // ========== Scammer Management (admin) ==========
-  app.post('/api/admin/flag-user', auth, adminOnly, (req, res) => {
+  app.post('/api/admin/flag-user', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     const { userId, reason } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
-    const user = queryOne('SELECT id, email, company_name FROM users WHERE id = ?', [userId]);
+    const user = await queryOne('SELECT id, email, company_name FROM users WHERE id = ?', [userId]);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    run('UPDATE users SET flagged = 1, flag_reason = ?, flagged_at = ? WHERE id = ?',
+    await run('UPDATE users SET flagged = 1, flag_reason = ?, flagged_at = ? WHERE id = ?',
         [reason || 'Flagged by admin', new Date().toISOString(), userId]);
-    run("DELETE FROM sessions WHERE user_id = ?", [userId]);
-    run("UPDATE listings SET status = 'suspended' WHERE user_id = ?", [userId]);
+    await run("DELETE FROM sessions WHERE user_id = ?", [userId]);
+    await run("UPDATE listings SET status = 'suspended' WHERE user_id = ?", [userId]);
     console.log(`[scam] Flagged user ${userId} (${user.company_name}): ${reason || 'no reason'}`);
     res.json({ success: true });
-  });
+  }));
 
-  app.post('/api/admin/unflag-user', auth, adminOnly, (req, res) => {
+  app.post('/api/admin/unflag-user', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
-    run('UPDATE users SET flagged = 0, flag_reason = NULL, flagged_at = NULL WHERE id = ?', [userId]);
+    await run('UPDATE users SET flagged = 0, flag_reason = NULL, flagged_at = NULL WHERE id = ?', [userId]);
     console.log(`[scam] Unflagged user ${userId}`);
     res.json({ success: true });
-  });
+  }));
 
-  app.get('/api/admin/flagged-users', auth, adminOnly, (req, res) => {
-    const rows = queryAll("SELECT * FROM users WHERE flagged = 1 ORDER BY flagged_at DESC");
+  app.get('/api/admin/flagged-users', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const rows = await queryAll("SELECT * FROM users WHERE flagged = 1 ORDER BY flagged_at DESC");
     res.json(rows.map(r => ({
       id: r.id, email: r.email, companyName: r.company_name,
       companyCountry: r.company_country, flagReason: r.flag_reason,
       flaggedAt: r.flagged_at
     })));
-  });
+  }));
 
   // ========== Stats ==========
-  app.get('/api/stats', auth, adminOnly, (req, res) => {
+  app.get('/api/stats', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     res.json({
-      totalUsers: (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin'") || {}).c || 0,
-      verifiedUsers: (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'verified'") || {}).c || 0,
-      pendingUsers: (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'pending'") || {}).c || 0,
-      totalListings: (queryOne('SELECT COUNT(*) as c FROM listings') || {}).c || 0,
-      activeListings: (queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'") || {}).c || 0,
-      totalMatches: (queryOne('SELECT COUNT(*) as c FROM matches') || {}).c || 0,
-      estimatedRevenue: (queryOne("SELECT COALESCE(SUM(commission), 0) as c FROM matches WHERE status IN ('accepted','completed')") || {}).c || 0,
+      totalUsers: Number(((await queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin'")) || {}).c || 0),
+      verifiedUsers: Number(((await queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'verified'")) || {}).c || 0),
+      pendingUsers: Number(((await queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'pending'")) || {}).c || 0),
+      totalListings: Number(((await queryOne('SELECT COUNT(*) as c FROM listings')) || {}).c || 0),
+      activeListings: Number(((await queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'")) || {}).c || 0),
+      totalMatches: Number(((await queryOne('SELECT COUNT(*) as c FROM matches')) || {}).c || 0),
+      estimatedRevenue: Number(((await queryOne("SELECT COALESCE(SUM(commission), 0) as c FROM matches WHERE status IN ('accepted','completed')")) || {}).c || 0),
     });
-  });
+  }));
 
   // ========== Backup/Restore API (admin only) ==========
-  app.get('/api/admin/backup', auth, adminOnly, (req, res) => {
-    const backup = createBackupPayload();
+  app.get('/api/admin/backup', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    const backup = await createBackupPayload();
     res.set('Content-Disposition', `attachment; filename="oilbridge-backup-${new Date().toISOString().split('T')[0]}.json"`);
     res.json(backup);
-  });
+  }));
 
-  app.post('/api/admin/restore', auth, adminOnly, (req, res) => {
+  app.post('/api/admin/restore', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     try {
       const backup = req.body;
       if (!backup || !backup.tables) return res.status(400).json({ error: 'Invalid backup format' });
-      const count = restoreFromBackup(backup);
-      syncAdminPassword();
+      const count = await restoreFromBackup(backup);
+      await syncAdminPassword();
       console.log(`[restore] Admin restored backup from ${backup.generatedAt || 'unknown'} — ${count} rows`);
       res.json({ success: true, restoredRows: count });
     } catch (err) {
       console.error('[restore] Failed:', err.message);
       res.status(500).json({ error: 'Restore failed: ' + err.message });
     }
-  });
+  }));
 
   // ========== Analytics API (admin only) ==========
-  app.get('/api/admin/analytics', auth, adminOnly, (req, res) => {
+  app.get('/api/admin/analytics', ah(async (req, res, next) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     const days = Math.min(parseInt(req.query.days) || 30, 90);
     const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
 
-    const dailyViews = queryAll(
+    const dailyViews = await queryAll(
       'SELECT date, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date >= ? GROUP BY date ORDER BY date',
       [since]
     );
 
-    const topPages = queryAll(
+    const topPages = await queryAll(
       'SELECT path, COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date >= ? GROUP BY path ORDER BY views DESC LIMIT 20',
       [since]
     );
 
-    const topReferrers = queryAll(
+    const topReferrers = await queryAll(
       "SELECT referrer, COUNT(*) as views FROM page_views WHERE date >= ? AND referrer IS NOT NULL AND referrer != '' GROUP BY referrer ORDER BY views DESC LIMIT 20",
       [since]
     );
 
-    const totals = queryOne(
+    const totals = (await queryOne(
       'SELECT COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date >= ?',
       [since]
-    ) || { views: 0, visitors: 0 };
+    )) || { views: 0, visitors: 0 };
 
     const today = new Date().toISOString().split('T')[0];
-    const todayStats = queryOne(
+    const todayStats = (await queryOne(
       'SELECT COUNT(*) as views, COUNT(DISTINCT visitor_hash) as visitors FROM page_views WHERE date = ?',
       [today]
-    ) || { views: 0, visitors: 0 };
+    )) || { views: 0, visitors: 0 };
 
     res.json({
       period: { days, since },
-      totals: { views: totals.views, visitors: totals.visitors },
-      today: { views: todayStats.views, visitors: todayStats.visitors },
+      totals: { views: Number(totals.views), visitors: Number(totals.visitors) },
+      today: { views: Number(todayStats.views), visitors: Number(todayStats.visitors) },
       dailyViews,
       topPages,
       topReferrers
     });
-  });
+  }));
 
   // ========== Public Stats (homepage trust indicators, unauthenticated) ==========
   // Approximate FX rates for display only (Apr 2026 ballpark).
   // In production you'd fetch these from an FX API and cache them.
   const FX_TO_EUR = { EUR: 1.0, USD: 0.92, GBP: 1.17 };
-  app.get('/api/public-stats', (req, res) => {
+  app.get('/api/public-stats', ah(async (req, res) => {
     try {
-      const completedDeals = (queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed'") || {}).c || 0;
-      const verifiedTraders = (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'verified'") || {}).c || 0;
-      const activeListings = (queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'") || {}).c || 0;
-      const completedMatches = queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed'");
+      const completedDeals = Number(((await queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed'")) || {}).c || 0);
+      const verifiedTraders = Number(((await queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin' AND kyc_status = 'verified'")) || {}).c || 0);
+      const activeListings = Number(((await queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'")) || {}).c || 0);
+      const completedMatches = await queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed'");
       const totalVolumeEur = completedMatches.reduce((sum, m) =>
         sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0
       );
-      const currentRate = getCurrentCommissionRate();
+      const currentRate = await getCurrentCommissionRate();
       const monthStart = new Date().toISOString().slice(0, 7) + '-01';
-      const dealsThisMonth = (queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart]) || {}).c || 0;
-      const monthMatches = queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart]);
+      const dealsThisMonth = Number(((await queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart])) || {}).c || 0);
+      const monthMatches = await queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart]);
       const volumeThisMonthEur = monthMatches.reduce((sum, m) => sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0);
-      const totalRegistered = (queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin'") || {}).c || 0;
+      const totalRegistered = Number(((await queryOne("SELECT COUNT(*) as c FROM users WHERE role != 'admin'")) || {}).c || 0);
       res.json({
         completedDeals, verifiedTraders, activeListings,
         totalVolumeEur: Math.round(totalVolumeEur),
@@ -1670,12 +1732,12 @@ function createApp() {
       console.error('[public-stats]', err.message);
       res.json({ completedDeals: 0, verifiedTraders: 0, activeListings: 0, totalVolumeEur: 0 });
     }
-  });
+  }));
 
   // ========== Health Check (for Railway / uptime monitoring) ==========
-  app.get(['/health', '/api/health'], (req, res) => {
+  app.get(['/health', '/api/health'], ah(async (req, res) => {
     let dbOk = true, dbError = null;
-    try { queryOne('SELECT 1 as ok'); } catch (e) { dbOk = false; dbError = e.message; }
+    try { await queryOne('SELECT 1 as ok'); } catch (e) { dbOk = false; dbError = e.message; }
     const payload = {
       status: dbOk ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
@@ -1690,21 +1752,21 @@ function createApp() {
     };
     if (dbError) payload.errors = { database: dbError };
     res.status(dbOk ? 200 : 503).json(payload);
-  });
+  }));
 
   // ========== Blog API Routes ==========
-  app.get('/api/blog', (req, res) => {
-    const rows = queryAll("SELECT id, slug, title, excerpt, tag, icon, meta_title, meta_description, read_time, created_at FROM blog_posts WHERE status = 'published' ORDER BY created_at DESC");
+  app.get('/api/blog', ah(async (req, res) => {
+    const rows = await queryAll("SELECT id, slug, title, excerpt, tag, icon, meta_title, meta_description, read_time, created_at FROM blog_posts WHERE status = 'published' ORDER BY created_at DESC");
     res.json(rows.map(r => ({
       id: r.id, slug: r.slug, title: r.title, excerpt: r.excerpt,
       tag: r.tag, icon: r.icon || '&#128218;',
       meta: { title: r.meta_title, description: r.meta_description },
       readTime: r.read_time, date: r.created_at
     })));
-  });
+  }));
 
-  app.get('/api/blog/:slug', (req, res) => {
-    const row = queryOne("SELECT * FROM blog_posts WHERE slug = ? AND status = 'published'", [req.params.slug]);
+  app.get('/api/blog/:slug', ah(async (req, res) => {
+    const row = await queryOne("SELECT * FROM blog_posts WHERE slug = ? AND status = 'published'", [req.params.slug]);
     if (!row) return res.status(404).json({ error: 'Article not found' });
     res.json({
       id: row.id, slug: row.slug, title: row.title, excerpt: row.excerpt,
@@ -1712,21 +1774,24 @@ function createApp() {
       meta: { title: row.meta_title, description: row.meta_description },
       readTime: row.read_time, date: row.created_at
     });
-  });
+  }));
 
-  app.post('/api/blog/generate', auth, adminOnly, ah(async (req, res) => {
+  app.post('/api/blog/generate', ah(async (req, res) => {
+    await auth(req, res, () => {});
+    if (!req.user) return;
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     const article = await generateBlogPost();
     if (!article) return res.status(500).json({ error: 'Blog generation failed — check ANTHROPIC_API_KEY and server logs' });
     res.json({ success: true, slug: article.slug, title: article.title });
   }));
 
   // ========== RSS Feed ==========
-  app.get('/feed.xml', (req, res) => {
+  app.get('/feed.xml', ah(async (req, res) => {
     const siteUrl = process.env.SITE_URL || 'https://www.oilbridge.eu';
     const now = new Date().toUTCString();
 
-    const blogPosts = queryAll("SELECT slug, title, excerpt, created_at FROM blog_posts WHERE status = 'published' ORDER BY created_at DESC LIMIT 20");
-    const listings = queryAll("SELECT id, oil_type, quantity, unit, price, currency, delivery_location, created_at FROM listings WHERE status = 'active' ORDER BY created_at DESC LIMIT 20");
+    const blogPosts = await queryAll("SELECT slug, title, excerpt, created_at FROM blog_posts WHERE status = 'published' ORDER BY created_at DESC LIMIT 20");
+    const listings = await queryAll("SELECT id, oil_type, quantity, unit, price, currency, delivery_location, created_at FROM listings WHERE status = 'active' ORDER BY created_at DESC LIMIT 20");
 
     const blogItems = blogPosts.map(p => `    <item>
       <title>${escXml(p.title)}</title>
@@ -1761,7 +1826,7 @@ ${items}
 </rss>`;
     res.set('Content-Type', 'application/rss+xml; charset=utf-8');
     res.send(xml);
-  });
+  }));
 
   // ========== IndexNow key verification ==========
   app.get(`/${INDEXNOW_KEY}.txt`, (req, res) => {
@@ -1784,15 +1849,15 @@ ${items}
     { loc: '/#privacy',                        changefreq: 'yearly',  priority: '0.3' },
   ];
 
-  app.get('/sitemap.xml', (req, res) => {
+  app.get('/sitemap.xml', ah(async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
     const all = [...SITEMAP_STATIC];
-    queryAll("SELECT slug, created_at FROM blog_posts WHERE status = 'published'").forEach(p => {
+    (await queryAll("SELECT slug, created_at FROM blog_posts WHERE status = 'published'")).forEach(p => {
       if (!SITEMAP_STATIC.some(s => s.loc.includes(p.slug))) {
         all.push({ loc: '/#blog/' + p.slug, changefreq: 'monthly', priority: '0.7' });
       }
     });
-    queryAll("SELECT id, created_at FROM listings WHERE status = 'active' ORDER BY created_at DESC LIMIT 100").forEach(l => {
+    (await queryAll("SELECT id, created_at FROM listings WHERE status = 'active' ORDER BY created_at DESC LIMIT 100")).forEach(l => {
       all.push({ loc: '/#listing/' + l.id, changefreq: 'weekly', priority: '0.6' });
     });
     const urls = all.map(u =>
@@ -1801,7 +1866,7 @@ ${items}
     const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
     res.set('Content-Type', 'application/xml; charset=utf-8');
     res.send(xml);
-  });
+  }));
 
   app.get('/robots.txt', (req, res) => {
     const txt = `User-agent: *\nAllow: /\n\nSitemap: ${SITE_URL}/sitemap.xml\n\n# RSS Feed\n# ${SITE_URL}/feed.xml\n`;
@@ -1834,189 +1899,79 @@ ${items}
 }
 
 // ============================================================
-// Daily JSON Backups
+// Backup helpers (API-only, no file-based backups)
 // ============================================================
-const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const BACKUP_RETENTION_DAYS = parseInt(process.env.BACKUP_RETENTION_DAYS, 10) || 30;
-
-function createBackupPayload() {
+async function createBackupPayload() {
   return {
     version: 2,
     generatedAt: new Date().toISOString(),
     tables: {
-      users:      queryAll('SELECT * FROM users'),
-      listings:   queryAll('SELECT * FROM listings'),
-      matches:    queryAll('SELECT * FROM matches'),
-      messages:   queryAll('SELECT * FROM messages'),
-      ratings:    queryAll('SELECT * FROM ratings'),
-      blog_posts: queryAll('SELECT * FROM blog_posts'),
-      page_views: queryAll('SELECT * FROM page_views ORDER BY id DESC LIMIT 10000')
+      users:      await queryAll('SELECT * FROM users'),
+      listings:   await queryAll('SELECT * FROM listings'),
+      matches:    await queryAll('SELECT * FROM matches'),
+      messages:   await queryAll('SELECT * FROM messages'),
+      ratings:    await queryAll('SELECT * FROM ratings'),
+      blog_posts: await queryAll('SELECT * FROM blog_posts'),
+      page_views: await queryAll('SELECT * FROM page_views ORDER BY id DESC LIMIT 10000')
     }
   };
 }
 
-function restoreFromBackup(backup) {
+async function restoreFromBackup(backup) {
   if (!backup || !backup.tables) throw new Error('Invalid backup format');
   let restored = 0;
 
-  const insertRow = (table, row, cols) => {
-    const placeholders = cols.map(() => '?').join(',');
+  const insertRow = async (table, row, cols, conflictTarget) => {
+    const placeholders = cols.map((_, i) => `$${i + 1}`).join(',');
     const values = cols.map(c => row[c] !== undefined ? row[c] : null);
     try {
-      db.run(`INSERT OR IGNORE INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`, values);
+      const conflict = conflictTarget ? `ON CONFLICT (${conflictTarget}) DO NOTHING` : 'ON CONFLICT DO NOTHING';
+      await pool.query(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${placeholders}) ${conflict}`, values);
       restored++;
     } catch (e) {}
   };
 
   if (backup.tables.users) {
     for (const r of backup.tables.users) {
-      insertRow('users', r, ['id','email','password','role','company_name','company_reg','company_country','company_vat','contact_name','contact_phone','contact_position','kyc_status','nda_accepted','documents','created_at','ai_verification','ai_verified_at','stripe_identity_session_id','stripe_identity_status','flagged','flag_reason','flagged_at']);
+      await insertRow('users', r, ['id','email','password','role','company_name','company_reg','company_country','company_vat','contact_name','contact_phone','contact_position','kyc_status','nda_accepted','documents','created_at','ai_verification','ai_verified_at','stripe_identity_session_id','stripe_identity_status','flagged','flag_reason','flagged_at'], 'id');
     }
   }
   if (backup.tables.listings) {
     for (const r of backup.tables.listings) {
-      insertRow('listings', r, ['id','user_id','type','oil_type','quantity','unit','price','currency','delivery_location','delivery_date','notes','status','created_at']);
+      await insertRow('listings', r, ['id','user_id','type','oil_type','quantity','unit','price','currency','delivery_location','delivery_date','notes','status','created_at'], 'id');
     }
   }
   if (backup.tables.matches) {
     for (const r of backup.tables.matches) {
-      insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','currency','commission_paid','stripe_session_id','evidence','created_at']);
+      await insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','currency','commission_paid','stripe_session_id','evidence','created_at'], 'id');
     }
   }
   if (backup.tables.messages) {
     for (const r of backup.tables.messages) {
-      insertRow('messages', r, ['id','match_id','sender_id','body','blocked','blocked_reason','created_at']);
+      await insertRow('messages', r, ['id','match_id','sender_id','body','blocked','blocked_reason','created_at'], 'id');
     }
   }
   if (backup.tables.ratings) {
     for (const r of backup.tables.ratings) {
-      insertRow('ratings', r, ['id','match_id','rater_id','rated_id','score','created_at']);
+      await insertRow('ratings', r, ['id','match_id','rater_id','rated_id','score','created_at'], 'id');
     }
   }
   if (backup.tables.blog_posts) {
     for (const r of backup.tables.blog_posts) {
-      insertRow('blog_posts', r, ['id','slug','title','excerpt','tag','icon','body','meta_title','meta_description','read_time','status','created_at']);
+      await insertRow('blog_posts', r, ['id','slug','title','excerpt','tag','icon','body','meta_title','meta_description','read_time','status','created_at'], 'id');
     }
   }
-  saveDb();
   return restored;
 }
 
-function performBackup() {
-  try {
-    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
-    const dateStr = new Date().toISOString().split('T')[0];
-    const filePath = path.join(BACKUP_DIR, `backup-${dateStr}.json`);
-    const backup = createBackupPayload();
-    const tmp = filePath + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(backup));
-    fs.renameSync(tmp, filePath);
-    const size = fs.statSync(filePath).size;
-    console.log(`[backup] Wrote ${filePath} (${(size / 1024).toFixed(1)} KB)`);
-
-    // Also push to external URL if configured
-    pushExternalBackup(backup);
-
-    const files = fs.readdirSync(BACKUP_DIR)
-      .filter(f => /^backup-\d{4}-\d{2}-\d{2}\.json$/.test(f))
-      .sort()
-      .reverse();
-    for (let i = BACKUP_RETENTION_DAYS; i < files.length; i++) {
-      try { fs.unlinkSync(path.join(BACKUP_DIR, files[i])); }
-      catch (err) {}
-    }
-  } catch (err) {
-    console.error('[backup] Failed:', err && err.stack ? err.stack : err);
-  }
-}
-
-async function pushExternalBackup(backup) {
-  const url = process.env.BACKUP_URL;
-  if (!url) return;
-  try {
-    const res = await fetch(url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(backup)
-    });
-    console.log(`[backup] Pushed to external URL — status ${res.status}`);
-  } catch (err) {
-    console.error('[backup] External push failed:', err.message);
-  }
-}
-
-async function pullExternalBackup() {
-  const url = process.env.BACKUP_URL;
-  if (!url) return null;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) { console.log(`[backup] External pull returned ${res.status}`); return null; }
-    const data = await res.json();
-    if (data && data.tables) {
-      console.log(`[backup] Pulled external backup from ${data.generatedAt || 'unknown date'}`);
-      return data;
-    }
-  } catch (err) {
-    console.error('[backup] External pull failed:', err.message);
-  }
-  return null;
-}
-
 function scheduleBackups() {
-  setTimeout(performBackup, 10_000);
-  setInterval(performBackup, 15 * 60 * 1000).unref();
+  // Periodic backup payload creation for API access — no file system writes
+  console.log('[backup] Backup available via admin API endpoint.');
 }
 
 // ============================================================
-// Uptime: startup/crash alerts via heartbeat file
+// Startup notification
 // ============================================================
-// A server cannot reliably detect its own downtime — for real uptime
-// alerts point an external monitor (UptimeRobot, BetterStack) at
-// https://your-domain/health. The heartbeat below catches UNCLEAN
-// shutdowns and emails the admin so crashes are at least visible.
-const HEARTBEAT_FILE = path.join(DATA_DIR, '.heartbeat');
-
-function detectAndNotifyUncleanRestart() {
-  try {
-    if (!fs.existsSync(HEARTBEAT_FILE)) return; // first run, nothing to report
-    const raw = fs.readFileSync(HEARTBEAT_FILE, 'utf8');
-    const lastBeat = new Date(raw.trim());
-    if (isNaN(lastBeat.getTime())) return;
-    const secondsSince = Math.round((Date.now() - lastBeat.getTime()) / 1000);
-
-    // Any existing heartbeat at startup means the previous process did not
-    // shut down cleanly (clean shutdowns delete it).
-    const minutes = Math.round(secondsSince / 60);
-    console.warn(`[uptime] Detected unclean shutdown — previous heartbeat was ${minutes} minute(s) ago`);
-    sendEmail({
-      to: process.env.ALERT_EMAIL || 'contact@oilbridge.eu',
-      subject: `OilBridge restarted unexpectedly`,
-      html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
-        <h2 style="color:#c0392b">OilBridge restarted unexpectedly</h2>
-        <p>The OilBridge server restarted on <strong>${new Date().toISOString()}</strong>. The previous process last wrote a heartbeat <strong>${minutes} minute(s) ago</strong>, which means it did not shut down cleanly (likely a crash or out-of-memory kill).</p>
-        <p>Check the Railway logs for the failure reason.</p>
-        <p style="font-size:0.8rem;color:#888;margin-top:32px">For true uptime monitoring, set up an external pinger (UptimeRobot, BetterStack) against <code>/health</code>.</p>
-      </div>`
-    }).catch(err => console.error('[uptime] Alert email failed:', err.message));
-  } catch (err) {
-    console.error('[uptime] heartbeat read failed:', err.message);
-  }
-}
-
-function startHeartbeat() {
-  const write = () => {
-    try { fs.writeFileSync(HEARTBEAT_FILE, new Date().toISOString()); } catch {}
-  };
-  write();
-  setInterval(write, 60_000).unref();
-  const cleanShutdown = () => {
-    try { fs.unlinkSync(HEARTBEAT_FILE); } catch {}
-    process.exit(0);
-  };
-  process.on('SIGINT', cleanShutdown);
-  process.on('SIGTERM', cleanShutdown);
-}
-
 async function sendStartupNotification() {
   try {
     await sendEmail({
@@ -2034,50 +1989,14 @@ async function sendStartupNotification() {
 }
 
 // ============================================================
-// Startup (async for sql.js init)
+// Startup
 // ============================================================
 (async () => {
-  const SQL = await initSqlJs();
+  await initDatabase();
+  await syncAdminPassword();
 
-  let freshDb = false;
-  if (fs.existsSync(DB_PATH)) {
-    const buffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(buffer);
-    console.log('Loaded existing database.');
-  } else {
-    db = new SQL.Database();
-    freshDb = true;
-    console.log('Created new database.');
-  }
-
-  initDatabase();
-  syncAdminPassword();
-
-  // On a fresh database (typical after Railway redeploy), try to restore
-  // from external backup so user data is not lost.
-  if (freshDb) {
-    const extBackup = await pullExternalBackup();
-    if (extBackup) {
-      try {
-        const count = restoreFromBackup(extBackup);
-        syncAdminPassword();
-        console.log(`[startup] Restored ${count} rows from external backup (${extBackup.generatedAt})`);
-      } catch (err) {
-        console.error('[startup] External restore failed:', err.message);
-      }
-    } else {
-      console.log('[startup] No external backup found. Set BACKUP_URL env var for persistence across deploys.');
-    }
-  }
-
-  // Uptime hooks BEFORE the listener so we don't miss a crash
-  detectAndNotifyUncleanRestart();
-  startHeartbeat();
-
-  // Schedule daily backups
+  // Schedule periodic tasks
   scheduleBackups();
-
-  // Schedule weekly blog generation
   scheduleBlogGeneration();
 
   const app = createApp();

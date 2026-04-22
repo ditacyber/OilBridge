@@ -811,6 +811,12 @@
            <p><strong>5.2</strong> If a transaction between parties who were introduced through the Platform is completed outside the Platform — whether intentionally or otherwise — the Platform Fee remains due and payable to the Company, calculated on the total value of the transaction at the standard Platform Fee rate applicable at the time of the original Introduction.</p>
            <p><strong>5.3</strong> The Recipient agrees to notify the Company within fourteen (14) days of any transaction completed with a counterparty first introduced through the Platform, regardless of where or how the transaction was executed.</p>
 
+           <h4>5A. Payment Terms and Late Fees</h4>
+           <p><strong>5A.1</strong> Platform fees are due within forty-eight (48) hours of match acceptance ("Due Date").</p>
+           <p><strong>5A.2</strong> If payment is not received by the Due Date, a late payment fee of <strong>5% per week</strong> shall be applied to the outstanding amount, calculated from the Due Date.</p>
+           <p><strong>5A.3</strong> If payment remains outstanding for more than fourteen (14) days past the Due Date, the Company reserves the right to suspend the Recipient's account and deactivate all active listings.</p>
+           <p><strong>5A.4</strong> Failure to pay the Platform Fee within thirty (30) days of the Due Date shall be deemed a material breach of this Agreement and shall trigger the non-circumvention penalty specified in clause 3.3 (ten times the Platform Fee).</p>
+
            <h4>6. Data Protection</h4>
            <p><strong>6.1</strong> The Company processes personal data in accordance with the General Data Protection Regulation (EU) 2016/679 ("GDPR") and applicable Dutch data protection legislation.</p>
            <p><strong>6.2</strong> Personal contact details (including email addresses, phone numbers, and messaging identifiers) are <strong>never shared directly</strong> between counterparties. All communication between Parties takes place exclusively within the Platform.</p>
@@ -2478,6 +2484,13 @@
 
         <h3 class="mt-24">4. Platform Fee</h3>
         <p>Platform fees are charged per metric ton based on product type. Standard rates: Diesel/Gasoil/EN 590: \u20ac0.50/MT, Jet Fuel: \u20ac1.00/MT, Bunker Fuel: \u20ac2.00/MT, Crude Oil: \u20ac0.25/MT, Specialty/Biofuels: 0.25% of deal value. Early adopter rate: 50% discount for the first 50 completed deals. The applicable rate is locked in at the time of match creation. Example: a 25,000 MT diesel transaction incurs a platform fee of \u20ac12,500 (or \u20ac6,250 at the early adopter rate). There are no subscription fees, listing fees, or other hidden costs.</p>
+
+        <h3 class="mt-24">4A. Payment Terms</h3>
+        <p>Platform fees are due within forty-eight (48) hours after match acceptance. The following schedule applies to late payments:</p>
+        <p>(a) After 48 hours: OilBridge will send an automatic payment reminder with a direct link to complete payment.</p>
+        <p>(b) After 7 days: The match is flagged as "payment overdue" and a late payment fee of 5% per week is added to the outstanding amount, calculated from the original due date.</p>
+        <p>(c) After 14 days: OilBridge reserves the right to suspend the User's account pending payment. All listings will be deactivated and access to the platform restricted.</p>
+        <p>(d) Continued non-payment constitutes a material breach of these Terms and the Non-Circumvention clause of the NDA, triggering the 10x platform fee penalty as specified in the NDA clause 3.3.</p>
 
         <h3 class="mt-24">5. Non-Circumvention</h3>
         <p>Users may not contact, negotiate with, or enter into transactions with counterparties first introduced through the Platform outside of or bypassing the Platform, for a period of twenty-four (24) months from the date of introduction. The full non-circumvention terms, including penalties, are set out in the NDA accepted during registration. By using the Platform, you reaffirm your agreement to these terms.</p>

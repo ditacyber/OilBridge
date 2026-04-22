@@ -157,6 +157,9 @@ function toMatch(row) {
     feeType: row.fee_type || 'per_mt',
     currency: row.currency,
     commissionPaid: !!row.commission_paid, stripeSessionId: row.stripe_session_id || null,
+    paymentReminderSent: !!row.payment_reminder_sent,
+    paymentOverdue: !!row.payment_overdue,
+    acceptedAt: row.accepted_at || null,
     hasEvidence: !!evidence,
     createdAt: row.created_at
   };
@@ -461,6 +464,11 @@ async function initDatabase() {
 
   // Migrate: add fee_type column to matches (per-MT or percentage)
   await run("ALTER TABLE matches ADD COLUMN IF NOT EXISTS fee_type TEXT DEFAULT 'per_mt'");
+
+  // Migrate: add payment reminder / overdue tracking columns to matches
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS payment_reminder_sent INTEGER NOT NULL DEFAULT 0');
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS payment_overdue INTEGER NOT NULL DEFAULT 0');
+  await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS accepted_at TEXT');
 
   // Ratings table (post-deal reputation)
   await run(`CREATE TABLE IF NOT EXISTS ratings (
@@ -1277,7 +1285,11 @@ function createApp() {
     if (match.buyer_id !== req.user.id && match.seller_id !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
     const { status } = req.body;
     if (status && ['accepted','declined','completed'].includes(status)) {
-      await run('UPDATE matches SET status = ? WHERE id = ?', [status, req.params.id]);
+      if (status === 'accepted') {
+        await run('UPDATE matches SET status = ?, accepted_at = ? WHERE id = ?', ['accepted', new Date().toISOString(), req.params.id]);
+      } else {
+        await run('UPDATE matches SET status = ? WHERE id = ?', [status, req.params.id]);
+      }
     }
     res.json({ success: true });
   }));
@@ -1808,6 +1820,7 @@ function createApp() {
       activeListings: Number(((await queryOne("SELECT COUNT(*) as c FROM listings WHERE status = 'active'")) || {}).c || 0),
       totalMatches: Number(((await queryOne('SELECT COUNT(*) as c FROM matches')) || {}).c || 0),
       estimatedRevenue: Number(((await queryOne("SELECT COALESCE(SUM(commission), 0) as c FROM matches WHERE status IN ('accepted','completed')")) || {}).c || 0),
+      overduePayments: Number((await queryOne("SELECT COUNT(*) as c FROM matches WHERE payment_overdue = 1 AND commission_paid = 0") || {}).c || 0),
     });
   }));
 
@@ -2130,7 +2143,7 @@ async function restoreFromBackup(backup) {
   }
   if (backup.tables.matches) {
     for (const r of backup.tables.matches) {
-      await insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','fee_type','currency','commission_paid','stripe_session_id','evidence','created_at'], 'id');
+      await insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','fee_type','currency','commission_paid','stripe_session_id','evidence','payment_reminder_sent','payment_overdue','accepted_at','created_at'], 'id');
     }
   }
   if (backup.tables.messages) {
@@ -2154,6 +2167,80 @@ async function restoreFromBackup(backup) {
 function scheduleBackups() {
   // Periodic backup payload creation for API access — no file system writes
   console.log('[backup] Backup available via admin API endpoint.');
+}
+
+// ============================================================
+// Payment reminder system
+// ============================================================
+async function checkPaymentReminders() {
+  const now = new Date();
+
+  // 48-hour reminder: matches accepted > 48h ago, not paid, reminder not sent
+  const needsReminder = await queryAll(
+    "SELECT m.*, l.oil_type FROM matches m LEFT JOIN listings l ON l.id = m.listing_id WHERE m.status = 'accepted' AND m.commission_paid = 0 AND m.payment_reminder_sent = 0 AND m.accepted_at IS NOT NULL AND m.accepted_at < ?",
+    [new Date(now - 48 * 60 * 60 * 1000).toISOString()]
+  );
+
+  for (const match of needsReminder) {
+    const seller = await queryOne('SELECT email, contact_name, company_name FROM users WHERE id = ?', [match.seller_id]);
+    if (seller && seller.email) {
+      const siteUrl = process.env.SITE_URL || 'https://www.oilbridge.eu';
+      await sendEmail({
+        to: seller.email,
+        subject: 'OilBridge — Platform fee payment reminder',
+        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+          <h2 style="color:#c8860a">Payment Reminder</h2>
+          <p>Hi ${seller.contact_name || ''},</p>
+          <p>Your matched trade (${match.quantity?.toLocaleString()} MT) was accepted over 48 hours ago but the platform fee of <strong>${match.currency} ${Number(match.commission).toFixed(2)}</strong> has not yet been paid.</p>
+          <p style="background:#f5f5f4;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555">
+            Per the OilBridge Terms of Service, platform fees are due within 48 hours of match acceptance. A late payment fee of 5% per week applies to overdue amounts. Non-payment may trigger the non-circumvention penalty (10x platform fee).
+          </p>
+          <p style="margin-top:24px"><a href="${siteUrl}/#matches" style="background:#c8860a;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Pay Platform Fee Now</a></p>
+          <p style="font-size:0.85rem;color:#888;margin-top:32px">— The OilBridge team</p>
+        </div>`
+      });
+      await run('UPDATE matches SET payment_reminder_sent = 1 WHERE id = ?', [match.id]);
+      console.log(`[payment] 48h reminder sent for match ${match.id} to ${seller.email}`);
+    }
+  }
+
+  // 7-day overdue: matches accepted > 7 days ago, not paid, not yet flagged overdue
+  const needsOverdue = await queryAll(
+    "SELECT m.* FROM matches m WHERE m.status = 'accepted' AND m.commission_paid = 0 AND m.payment_overdue = 0 AND m.accepted_at IS NOT NULL AND m.accepted_at < ?",
+    [new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString()]
+  );
+
+  for (const match of needsOverdue) {
+    const seller = await queryOne('SELECT email, contact_name, company_name FROM users WHERE id = ?', [match.seller_id]);
+    if (seller && seller.email) {
+      const siteUrl = process.env.SITE_URL || 'https://www.oilbridge.eu';
+      await sendEmail({
+        to: seller.email,
+        subject: 'OilBridge — URGENT: Platform fee overdue',
+        html: `<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1c1b">
+          <h2 style="color:#c0392b">Platform Fee Overdue</h2>
+          <p>Hi ${seller.contact_name || ''},</p>
+          <p>Your platform fee of <strong>${match.currency} ${Number(match.commission).toFixed(2)}</strong> is now 7 days overdue. This match has been flagged as <strong>payment overdue</strong>.</p>
+          <p style="background:#fdf0ee;padding:12px 16px;border-radius:6px;font-size:0.9rem;color:#555">
+            <strong>Important:</strong> Per our Terms of Service:<br>
+            &bull; A late payment fee of 5% per week is being applied<br>
+            &bull; Your account may be suspended pending payment<br>
+            &bull; Continued non-payment constitutes a breach of the Non-Circumvention clause, triggering the 10x platform fee penalty
+          </p>
+          <p style="margin-top:24px"><a href="${siteUrl}/#matches" style="background:#c0392b;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none">Pay Now to Avoid Penalties</a></p>
+          <p style="font-size:0.85rem;color:#888;margin-top:32px">— The OilBridge team</p>
+        </div>`
+      });
+      // Also notify admin
+      await sendEmail({
+        to: process.env.ALERT_EMAIL || 'contact@oilbridge.eu',
+        subject: `[Admin] Payment overdue: match ${match.id}`,
+        html: `<p>Match ${match.id} is 7 days overdue. Seller: ${seller.company_name} (${seller.email}). Amount: ${match.currency} ${Number(match.commission).toFixed(2)}</p>`
+      });
+    }
+    await run('UPDATE matches SET payment_overdue = 1 WHERE id = ?', [match.id]);
+    console.log(`[payment] 7-day overdue flagged for match ${match.id}`);
+  }
 }
 
 // ============================================================
@@ -2185,6 +2272,11 @@ async function sendStartupNotification() {
   // Schedule periodic tasks
   scheduleBackups();
   scheduleBlogGeneration();
+
+  // Check for overdue payments every 15 minutes
+  setInterval(() => {
+    checkPaymentReminders().catch(e => console.error('[payment] Reminder check failed:', e.message));
+  }, 15 * 60 * 1000).unref();
 
   const app = createApp();
   app.listen(PORT, '0.0.0.0', () => {

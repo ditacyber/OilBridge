@@ -137,7 +137,7 @@ class Store {
   async rateCounterparty(matchId, score) { return await this.api('POST', '/matches/' + matchId + '/rate', { score }); }
 
   // --- Scammer management (admin) ---
-  async flagUser(userId, reason) { return await this.api('POST', '/admin/flag-user', { userId, reason }); }
+  async flagUser(userId, reason, rejectionReason) { return await this.api('POST', '/admin/flag-user', { userId, reason, rejectionReason }); }
   async unflagUser(userId) { return await this.api('POST', '/admin/unflag-user', { userId }); }
   async getFlaggedUsers() { return (await this.api('GET', '/admin/flagged-users')) || []; }
 

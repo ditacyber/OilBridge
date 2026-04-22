@@ -252,7 +252,7 @@
       { q: 'How is my data protected?',
         a: 'All data is encrypted in transit and at rest. We are GDPR compliant and never share personal contact details with counterparties.' },
       { q: 'What is the platform fee?',
-        a: 'A fixed 3.2% platform fee per successful deal. No hidden costs, no subscription, no listing fees.' },
+        a: 'Platform fees are based on product type: \u20ac0.50/MT for diesel and gasoline, \u20ac1.00/MT for jet fuel and LNG, \u20ac2.00/MT for bunker fuel, \u20ac0.25/MT for crude oil, and 0.25% for specialty products. Early adopters get 50% off for the first 50 deals. Example: a 25,000 MT diesel deal = \u20ac12,500 platform fee.' },
       { q: 'Who can use OilBridge?',
         a: 'Verified EU-registered companies only. All users must pass KYC verification via Stripe Identity before gaining access.' },
       { q: 'What if a deal goes wrong?',
@@ -671,9 +671,16 @@
                 </div>
                 <div class="commission-banner" style="margin-bottom:20px">
                   <div class="commission-banner-text">
-                    <strong>Commission (${(currentRate * 100).toFixed(isEarly ? 0 : 1)}%)${isEarly ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</strong><br>
-                    ${formatCurrency(listing.price * listing.quantity * currentRate, listing.currency)}
-                    ${isEarly && stats.earlyAdopterSlotsLeft != null ? `<div style="font-size:0.75rem;margin-top:4px;color:var(--text-muted)">${stats.earlyAdopterSlotsLeft} early-adopter slots left</div>` : ''}
+                    ${(() => {
+                      const feeRate = stats.feeSchedule && stats.feeSchedule[listing.oilType];
+                      if (feeRate != null) {
+                        const effectiveRate = isEarly ? feeRate * (stats.earlyAdopterDiscount || 0.5) : feeRate;
+                        const totalFee = effectiveRate * listing.quantity;
+                        return `<strong>Platform Fee (\u20ac${feeRate.toFixed(2)}/MT)${isEarly ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</strong><br>\u20ac${totalFee.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})}${isEarly && stats.earlyAdopterSlotsLeft != null ? '<div style="font-size:0.75rem;margin-top:4px;color:var(--text-muted)">' + stats.earlyAdopterSlotsLeft + ' early-adopter slots left</div>' : ''}`;
+                      } else {
+                        return `<strong>Commission (${(currentRate * 100).toFixed(isEarly ? 0 : 1)}%)${isEarly ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</strong><br>${formatCurrency(listing.price * listing.quantity * currentRate, listing.currency)}${isEarly && stats.earlyAdopterSlotsLeft != null ? '<div style="font-size:0.75rem;margin-top:4px;color:var(--text-muted)">' + stats.earlyAdopterSlotsLeft + ' early-adopter slots left</div>' : ''}`;
+                      }
+                    })()}
                   </div>
                 </div>
                 ${actionBtn}
@@ -779,7 +786,7 @@
            <p><strong>"Platform"</strong> means the OilBridge web application at oilbridge.eu and any associated services, APIs, or communication systems operated by the Company.</p>
            <p><strong>"Confidential Information"</strong> means all information disclosed through or obtained via the Platform, including but not limited to: trading data, pricing information, bid and offer details, counterparty identities, company names and registration details, transaction volumes, delivery schedules, storage allocations, business strategies, commission structures, user lists, and any information marked or reasonably understood to be confidential.</p>
            <p><strong>"Introduction"</strong> means any instance where the Recipient first becomes aware of, or is connected with, a counterparty through the Platform, whether via a listing, a match, a chat interaction, or any other Platform feature.</p>
-           <p><strong>"Platform Fee"</strong> means the commission charged by the Company on transactions facilitated through the Platform, as published on the Platform at the time of the transaction.</p>
+           <p><strong>"Platform Fee"</strong> means the per-metric-ton fee (or percentage-based fee for specialty products) charged by the Company on transactions facilitated through the Platform, as published on the Platform at the time of the transaction.</p>
 
            <h4>2. Confidentiality Obligations</h4>
            <p>The Recipient agrees to:</p>
@@ -835,7 +842,7 @@
 
   function renderRegister(main) {
     if (store.isLoggedIn()) { navigate('home'); return; }
-    setPageMeta('Register — Join OilBridge', 'Create your OilBridge account. Stripe Identity verification, NDA protection, and a transparent 3.2% platform fee on completed deals.');
+    setPageMeta('Register — Join OilBridge', 'Create your OilBridge account. Stripe Identity verification, NDA protection, and transparent per-metric-ton platform fees on completed deals.');
     const steps = ['register_step_company','register_step_contact','register_step_nda','register_step_password'];
     let currentStep = 0;
     let formData = {};
@@ -974,7 +981,7 @@
         window.location.href = kyc.url;
       } else if (kyc && kyc.fallback === 'document_upload') {
         // Stripe Identity not available — fall back to manual document upload
-        showToast(kyc.error || 'Stripe Identity unavailable — please upload documents for manual review.', 'info');
+        showToast('Please upload your ID documents to complete verification.', 'info');
         navigate('kyc-manual');
       } else {
         showToast((kyc && kyc.error) || 'Identity verification is temporarily unavailable. You can retry from your profile.', 'error');
@@ -1152,7 +1159,7 @@
             <div class="match-detail"><div class="match-detail-label">${esc(i18n.t('listing_quantity'))}</div><div class="match-detail-value">${match.quantity.toLocaleString()} ${listing ? esc(i18n.t(listing.unit)) : ''}</div></div>
             <div class="match-detail"><div class="match-detail-label">${esc(i18n.t('listing_price'))}</div><div class="match-detail-value">${formatCurrency(match.pricePerUnit, match.currency)} ${esc(i18n.t('general_per_unit'))}</div></div>
             <div class="match-detail"><div class="match-detail-label" data-i18n="match_total">${esc(i18n.t('match_total'))}</div><div class="match-detail-value">${formatCurrency(match.totalValue, match.currency)}</div></div>
-            <div class="match-detail"><div class="match-detail-label">Commission (${((match.commissionRate ?? 0.032) * 100).toFixed(match.commissionRate === 0.02 ? 0 : 1)}%)${match.commissionRate === 0.02 ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</div><div class="match-detail-value text-accent">${formatCurrency(match.commission, match.currency)}</div></div>
+            <div class="match-detail"><div class="match-detail-label">${match.feeType === 'per_mt' ? `Platform Fee (\u20ac${(match.feePerMt || 0).toFixed(2)}/MT)` : match.feeType === 'percentage' ? `Platform Fee (${((match.commissionRate ?? 0.0025) * 100).toFixed(2)}%)` : `Commission (${((match.commissionRate ?? 0.032) * 100).toFixed(match.commissionRate === 0.02 ? 0 : 1)}%)`}${match.earlyAdopter ? ' <span class="badge badge-success" style="font-size:0.7rem;margin-left:4px">Early Adopter</span>' : ''}</div><div class="match-detail-value text-accent">${formatCurrency(match.commission, match.currency)}</div></div>
           </div>
 
           ${isAccepted && counterparty ? `
@@ -1277,7 +1284,7 @@
       if (result && result.url) {
         window.location.href = result.url;
       } else if (result && result.fallback === 'document_upload') {
-        showToast(result.error || 'Stripe Identity unavailable — please upload documents for manual review.', 'info');
+        showToast('Please upload your ID documents to complete verification.', 'info');
         navigate('kyc-manual');
       } else {
         kycBtn.disabled = false;
@@ -1501,12 +1508,28 @@
       const unflagBtn = e.target.closest('.admin-unflag-btn');
 
       if (flagBtn) {
-        const reason = prompt('Reason for flagging this user:');
-        if (reason !== null) {
-          await store.flagUser(flagBtn.dataset.id, reason);
-          showToast('User flagged and locked out', 'success');
-          renderTab();
+        const reasons = [
+          'Fake products (D2/D6/JP-54/BLCO)',
+          'Personal email (gmail/yahoo/hotmail)',
+          'Price too low (>15% below Platts)',
+          'Multiple unrelated ports',
+          'Upfront payment request',
+          'Other'
+        ];
+        const reasonList = reasons.map((r, i) => `${i + 1}. ${r}`).join('\n');
+        const choice = prompt('Select scam reason:\n' + reasonList + '\n\nEnter number (1-6):');
+        if (choice === null) return;
+        const idx = parseInt(choice) - 1;
+        let rejectionReason = reasons[idx] || reasons[5];
+        let reason = rejectionReason;
+        if (rejectionReason === 'Other') {
+          reason = prompt('Enter custom reason:');
+          if (!reason) return;
+          rejectionReason = 'Other';
         }
+        await store.flagUser(flagBtn.dataset.id, reason, rejectionReason);
+        showToast('User flagged and locked out', 'success');
+        renderTab();
         return;
       }
       if (unflagBtn) {
@@ -1928,7 +1951,7 @@
         if (kyc && kyc.url) {
           window.location.href = kyc.url;
         } else if (kyc && kyc.fallback === 'document_upload') {
-          showToast(kyc.error || 'Stripe Identity unavailable — redirecting to manual upload.', 'info');
+          showToast('Please upload your ID documents to complete verification.', 'info');
           navigate('kyc-manual');
         } else {
           retryBtn.disabled = false;
@@ -1980,7 +2003,7 @@
   // PAGE: KYC Manual Upload (fallback when Stripe Identity is unavailable)
   // ============================================================
   async function renderKycManual(main) {
-    setPageMeta('Manual Identity Verification', 'Upload your ID documents for manual review by an administrator.');
+    setPageMeta('Identity Verification', 'Upload your government-issued ID for verification by our compliance team.');
     const user = store.getCurrentUser();
     if (!user) { navigate('login'); return; }
 
@@ -2005,18 +2028,18 @@
           <div class="container" style="max-width:640px">
             <a href="#profile" class="btn btn-ghost btn-sm mb-16">&larr; Back to Profile</a>
             <div class="card" style="padding:32px">
-              <h2 style="margin-bottom:8px">Manual Identity Verification</h2>
+              <h2 style="margin-bottom:8px">Identity Verification</h2>
               <p class="text-muted" style="font-size:0.9rem;line-height:1.6;margin-bottom:20px">
-                Stripe Identity is not available right now, so we'll verify your account the old-fashioned way.
-                Upload 1–3 clear photos of your government-issued ID (passport, driver's licence or national ID card)
-                and an administrator will review them within 1–3 business days. You'll receive an email with the result.
+                Please upload a clear photo of your government-issued ID (passport or national ID card).
+                Our compliance team will review your documents within 1 business day.
+                You will receive an email confirmation once verified.
               </p>
 
               <div class="commission-banner" style="margin-bottom:24px">
                 <div class="commission-banner-icon">&#128274;</div>
                 <div class="commission-banner-text">
-                  Uploaded documents are encrypted at rest and only viewed by authorised administrators.
-                  For liveness, include one photo of you holding the ID next to your face.
+                  All uploaded documents are encrypted at rest and reviewed only by authorised compliance staff.
+                  For faster approval, include a photo of yourself holding the ID next to your face.
                 </div>
               </div>
 
@@ -2030,7 +2053,7 @@
               <div class="upload-file-list" style="margin-top:12px">${fileListHtml}</div>
 
               <button class="btn btn-primary btn-block btn-lg mt-24" id="kyc-manual-submit" ${disabled ? 'disabled' : ''}>
-                Submit for Manual Review
+                Submit for Verification
               </button>
             </div>
           </div>
@@ -2061,7 +2084,7 @@
           navigate('profile');
         } else {
           submit.disabled = false;
-          submit.textContent = 'Submit for Manual Review';
+          submit.textContent = 'Submit for Verification';
           showToast((r && r.error) || 'Upload failed', 'error');
         }
       });
@@ -2163,7 +2186,7 @@
         </ul>
 
         <h2>Why Use OilBridge?</h2>
-        <p>OilBridge simplifies this entire process by providing a single platform where you can browse sell orders from KYC-verified sellers, express interest, get matched automatically, and connect directly with counterparties. Our 3.2% commission is only charged on successfully completed transactions — there are no listing fees, subscription costs, or hidden charges.</p>
+        <p>OilBridge simplifies this entire process by providing a single platform where you can browse sell orders from KYC-verified sellers, express interest, get matched automatically, and connect directly with counterparties. Our transparent per-metric-ton fees are only charged on successfully completed transactions — there are no listing fees, subscription costs, or hidden charges.</p>
 
         <blockquote>Ready to start buying oil in bulk? <a href="#register">Register on OilBridge</a> today and gain access to verified sellers across 27 EU countries.</blockquote>
       `
@@ -2210,7 +2233,7 @@
         <p>Smart matching algorithms connect compatible buy and sell orders automatically. If you post a buy order for 10,000 MT of EN 590 diesel delivered to Gdansk, and a seller lists a compatible offer, the platform creates a match and facilitates the introduction.</p>
 
         <h3>5. Reduced Transaction Costs</h3>
-        <p>Traditional oil brokers charge commissions of 5-15 cents per barrel, and the process involves multiple phone calls, emails, and intermediaries. Digital platforms streamline this to a single commission (OilBridge charges 3.2%) with a clear, transparent process.</p>
+        <p>Traditional oil brokers charge commissions of 5-15 cents per barrel, and the process involves multiple phone calls, emails, and intermediaries. Digital platforms streamline this to transparent per-metric-ton fees (OilBridge charges based on product type) with a clear, transparent process.</p>
 
         <h2>Getting Started as an SME</h2>
         <p>Here is a practical roadmap for SMEs looking to start trading on an oil marketplace:</p>
@@ -2342,7 +2365,7 @@
           <li>Develop repeat relationships with buyers discovered through the platform</li>
         </ul>
 
-        <blockquote>Have surplus oil stocks to sell? <a href="#register">Register on OilBridge</a>, list your products, and reach verified buyers across the entire European Union. Our 3.2% commission is only charged when a trade is successfully completed.</blockquote>
+        <blockquote>Have surplus oil stocks to sell? <a href="#register">Register on OilBridge</a>, list your products, and reach verified buyers across the entire European Union. Our transparent per-metric-ton fees are only charged when a trade is successfully completed.</blockquote>
       `
     }
   ];
@@ -2454,7 +2477,7 @@
         <p>OilBridge is a technology platform that enables verified EU-registered companies to discover counterparties and manage oil trading deals. OilBridge does not act as a broker, agent, or trading intermediary. OilBridge does not buy, sell, own, transport, inspect, or take custody of any commodity. All commercial decisions are made by the users themselves.</p>
 
         <h3 class="mt-24">4. Platform Fee</h3>
-        <p>A platform fee applies per successfully completed deal. <strong>Early adopter rate: 2%</strong> for the first 50 completed deals on the Platform. <strong>Standard rate: 3.2%</strong> thereafter. The applicable rate is locked in at the time of match creation. There are no subscription fees, listing fees, or other hidden costs. The platform fee is payable via Stripe before the deal is marked as completed.</p>
+        <p>Platform fees are charged per metric ton based on product type. Standard rates: Diesel/Gasoil/EN 590: \u20ac0.50/MT, Jet Fuel: \u20ac1.00/MT, Bunker Fuel: \u20ac2.00/MT, Crude Oil: \u20ac0.25/MT, Specialty/Biofuels: 0.25% of deal value. Early adopter rate: 50% discount for the first 50 completed deals. The applicable rate is locked in at the time of match creation. Example: a 25,000 MT diesel transaction incurs a platform fee of \u20ac12,500 (or \u20ac6,250 at the early adopter rate). There are no subscription fees, listing fees, or other hidden costs.</p>
 
         <h3 class="mt-24">5. Non-Circumvention</h3>
         <p>Users may not contact, negotiate with, or enter into transactions with counterparties first introduced through the Platform outside of or bypassing the Platform, for a period of twenty-four (24) months from the date of introduction. The full non-circumvention terms, including penalties, are set out in the NDA accepted during registration. By using the Platform, you reaffirm your agreement to these terms.</p>

@@ -20,8 +20,22 @@ process.on('unhandledRejection', (reason) => {
 // ============================================================
 // Config
 // ============================================================
-const COMMISSION_RATE = 0.032;
-const EARLY_ADOPTER_RATE = 0.02;
+const FEE_SCHEDULE = {
+  oil_diesel: 0.50,      // Diesel / EN 590
+  oil_gasoline: 0.50,    // Gasoline
+  oil_jet: 1.00,         // Jet Fuel
+  oil_fuel_oil: 2.00,    // Bunker/Fuel Oil
+  oil_mazut: 2.00,       // Mazut (bunker fuel)
+  oil_brent: 0.25,       // Brent Crude
+  oil_wti: 0.25,         // WTI Crude
+  oil_ural: 0.25,        // Urals Crude
+  oil_naphtha: 0.50,     // Naphtha
+  oil_lng: 1.00,         // LNG
+  oil_lpg: 1.00,         // LPG
+  oil_bitumen: 0.50,     // Bitumen
+};
+const SPECIALTY_RATE = 0.0025; // 0.25% for anything not in FEE_SCHEDULE
+const EARLY_ADOPTER_DISCOUNT = 0.5; // 50% off
 const EARLY_ADOPTER_LIMIT = 50;
 const PORT = process.env.PORT || 3000;
 
@@ -115,6 +129,7 @@ async function toUser(row) {
     kycVerifiedAt: row.ai_verified_at || null,
     flagged: !!row.flagged,
     flagReason: row.flag_reason || null,
+    rejectionReason: row.rejection_reason || null,
     createdAt: row.created_at,
     ...(await getUserReputation(row.id))
   };
@@ -138,7 +153,8 @@ function toMatch(row) {
     id: row.id, listingId: row.listing_id, buyerId: row.buyer_id, sellerId: row.seller_id,
     status: row.status, quantity: row.quantity, pricePerUnit: row.price_per_unit,
     totalValue: row.total_value, commission: row.commission,
-    commissionRate: row.commission_rate != null ? row.commission_rate : COMMISSION_RATE,
+    commissionRate: row.commission_rate != null ? row.commission_rate : 0,
+    feeType: row.fee_type || 'per_mt',
     currency: row.currency,
     commissionPaid: !!row.commission_paid, stripeSessionId: row.stripe_session_id || null,
     hasEvidence: !!evidence,
@@ -146,14 +162,31 @@ function toMatch(row) {
   };
 }
 
-// Early-adopter pricing: first EARLY_ADOPTER_LIMIT completed deals pay the
-// reduced rate. Once that threshold is crossed, new matches use the standard
-// rate. The rate is locked in at match creation so users keep the price they
-// were quoted.
-async function getCurrentCommissionRate() {
-  const row = await queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND commission_paid = 1");
-  const completedCount = Number((row && row.c) || 0);
-  return completedCount < EARLY_ADOPTER_LIMIT ? EARLY_ADOPTER_RATE : COMMISSION_RATE;
+// Per-metric-ton fee structure: products in FEE_SCHEDULE pay a fixed EUR/MT
+// rate; everything else pays the SPECIALTY_RATE percentage. The first
+// EARLY_ADOPTER_LIMIT completed deals get 50% off. The fee is locked in at
+// match creation so users keep the price they were quoted.
+async function calculateCommission(oilType, quantity, totalValue) {
+  const completedCount = Number((await queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND commission_paid = 1") || {}).c || 0);
+  const isEarlyAdopter = completedCount < EARLY_ADOPTER_LIMIT;
+
+  let commission;
+  let feeType; // 'per_mt' or 'percentage'
+  let feeRate;
+
+  if (FEE_SCHEDULE[oilType]) {
+    feeRate = FEE_SCHEDULE[oilType];
+    commission = quantity * feeRate;
+    feeType = 'per_mt';
+  } else {
+    feeRate = SPECIALTY_RATE;
+    commission = totalValue * feeRate;
+    feeType = 'percentage';
+  }
+
+  if (isEarlyAdopter) commission *= EARLY_ADOPTER_DISCOUNT;
+
+  return { commission, feeType, feeRate, isEarlyAdopter, slotsLeft: Math.max(0, EARLY_ADOPTER_LIMIT - completedCount) };
 }
 
 async function getUserReputation(userId) {
@@ -359,12 +392,12 @@ async function checkForMatches(newListing) {
       if (!existing) {
         const qty = Math.min(buy.quantity, sell.quantity);
         const total = qty * sell.price;
-        const rate = await getCurrentCommissionRate();
+        const fee = await calculateCommission(sell.oil_type, qty, total);
         const evidence = await buildMatchEvidence(sell, buy.user_id, sell.user_id, qty, sell.price);
         await run(
-          `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, commission_rate, currency, created_at, evidence)
-           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, total * rate, rate, sell.currency, new Date().toISOString(), JSON.stringify(evidence)]
+          `INSERT INTO matches (id, listing_id, buyer_id, seller_id, status, quantity, price_per_unit, total_value, commission, commission_rate, fee_type, currency, created_at, evidence)
+           VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [generateId('mtc'), sell.id, buy.user_id, sell.user_id, qty, sell.price, total, fee.commission, fee.feeRate, fee.feeType, sell.currency, new Date().toISOString(), JSON.stringify(evidence)]
         );
       }
     }
@@ -426,6 +459,9 @@ async function initDatabase() {
   // Migrate: add commission rate (for early-adopter pricing)
   await run('ALTER TABLE matches ADD COLUMN IF NOT EXISTS commission_rate DOUBLE PRECISION');
 
+  // Migrate: add fee_type column to matches (per-MT or percentage)
+  await run("ALTER TABLE matches ADD COLUMN IF NOT EXISTS fee_type TEXT DEFAULT 'per_mt'");
+
   // Ratings table (post-deal reputation)
   await run(`CREATE TABLE IF NOT EXISTS ratings (
     id TEXT PRIMARY KEY,
@@ -442,6 +478,9 @@ async function initDatabase() {
   await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged INTEGER NOT NULL DEFAULT 0");
   await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS flag_reason TEXT");
   await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS flagged_at TEXT");
+
+  // Migrate: add rejection_reason for scam categorization
+  await run("ALTER TABLE users ADD COLUMN IF NOT EXISTS rejection_reason TEXT");
 
   // Analytics table (cookieless, GDPR-compliant)
   await run(`CREATE TABLE IF NOT EXISTS page_views (
@@ -650,16 +689,154 @@ Article requirements:
   }
 }
 
+async function generateScamWatchPost() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.log('[scam-watch] ANTHROPIC_API_KEY not set — skipping generation.');
+    return null;
+  }
+
+  // Query flagged users from the last 7 days
+  const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const flaggedUsers = await queryAll(
+    "SELECT rejection_reason, flag_reason, company_country, flagged_at FROM users WHERE flagged = 1 AND flagged_at >= ? ORDER BY flagged_at DESC",
+    [weekAgo]
+  );
+
+  if (flaggedUsers.length === 0) {
+    console.log('[scam-watch] No flagged users in the last 7 days — skipping.');
+    return null;
+  }
+
+  // Count scam patterns by rejection_reason
+  const patterns = {};
+  const countries = {};
+  for (const u of flaggedUsers) {
+    const reason = u.rejection_reason || 'unclassified';
+    patterns[reason] = (patterns[reason] || 0) + 1;
+    const country = u.company_country || 'unknown';
+    countries[country] = (countries[country] || 0) + 1;
+  }
+
+  // Calculate ISO week number
+  const now = new Date();
+  const startOfYear = new Date(now.getFullYear(), 0, 1);
+  const dayOfYear = Math.floor((now - startOfYear) / 86400000) + 1;
+  const weekNumber = Math.ceil((dayOfYear + startOfYear.getDay()) / 7);
+  const year = now.getFullYear();
+
+  const slug = `scam-watch-week-${weekNumber}-${year}`;
+  const title = `EU Oil Trading Scam Watch \u2014 Week ${weekNumber} ${year}`;
+
+  // Check if already published this week
+  if (await queryOne('SELECT id FROM blog_posts WHERE slug = ?', [slug])) {
+    console.log(`[scam-watch] Already published ${slug} — skipping.`);
+    return null;
+  }
+
+  const patternSummary = Object.entries(patterns)
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, count]) => `${reason}: ${count} case(s)`)
+    .join('; ');
+
+  const countrySummary = Object.entries(countries)
+    .sort((a, b) => b[1] - a[1])
+    .map(([c, count]) => `${c}: ${count}`)
+    .join('; ');
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        messages: [{
+          role: 'user',
+          content: `Write a "Scam Watch" blog article for OilBridge (www.oilbridge.eu), a compliance platform for European oil trading.
+
+Title: "${title}"
+
+This is a weekly scam intelligence report. Here are the anonymized stats from the past 7 days:
+- Total flagged accounts: ${flaggedUsers.length}
+- Scam patterns by category: ${patternSummary}
+- Countries of origin: ${countrySummary}
+
+Return ONLY valid JSON (no markdown code fences) with this exact structure:
+{
+  "excerpt": "One-sentence summary for the listing page (max 160 chars)",
+  "tag": "Scam Watch",
+  "meta_title": "EU Oil Trading Scam Watch Week ${weekNumber} ${year} — OilBridge",
+  "meta_description": "Weekly scam intelligence report for European oil traders. ${flaggedUsers.length} suspicious accounts flagged. Stay protected with OilBridge.",
+  "read_time": "X min read",
+  "body": "<p>Full HTML article body...</p>"
+}
+
+Article requirements:
+- 600–1000 words
+- Open with a brief overview of the week's scam activity
+- Break down each scam pattern category with anonymized examples and red flags
+- Include a "How to Protect Yourself" section with practical tips
+- Reference OilBridge's KYC/verification as a protective measure
+- NEVER reveal specific company names, emails, or personally identifiable details
+- End with a <blockquote> CTA encouraging traders to register on OilBridge for verified trading
+- Use <p>, <ul>, <li>, <strong>, <h2>, <h3> tags only
+- Professional, factual tone. No sensationalism.
+- Current date context: ${now.toISOString().split('T')[0]}`
+        }]
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      console.error('[scam-watch] Claude API error:', res.status, err);
+      return null;
+    }
+
+    const data = await res.json();
+    const text = data.content && data.content[0] && data.content[0].text;
+    if (!text) { console.error('[scam-watch] Empty Claude response'); return null; }
+
+    const article = JSON.parse(text);
+    if (!article.body) {
+      console.error('[scam-watch] Invalid article structure');
+      return null;
+    }
+
+    const id = generateId('blog');
+    await run(
+      `INSERT INTO blog_posts (id, slug, title, excerpt, tag, icon, body, meta_title, meta_description, read_time, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?)`,
+      [id, slug, title, article.excerpt, article.tag || 'Scam Watch', '&#128681;',
+       article.body, article.meta_title, article.meta_description,
+       article.read_time || '5 min read', new Date().toISOString()]
+    );
+
+    console.log(`[scam-watch] Published: "${title}" (${slug})`);
+    pingIndexNow(`${process.env.SITE_URL || 'https://www.oilbridge.eu'}/#blog/${slug}`);
+    return { slug, title };
+  } catch (err) {
+    console.error('[scam-watch] Generation failed:', err.message);
+    return null;
+  }
+}
+
 function scheduleBlogGeneration() {
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log('[blog] ANTHROPIC_API_KEY not set — weekly generation disabled.');
     return;
   }
   console.log('[blog] Weekly blog generation enabled (Mondays at 08:00).');
+  console.log('[scam-watch] Weekly scam watch generation enabled (Mondays at 08:00).');
   setInterval(() => {
     const now = new Date();
     if (now.getUTCDay() === 1 && now.getUTCHours() === 8 && now.getUTCMinutes() === 0) {
       generateBlogPost().catch(e => console.error('[blog] Scheduled generation failed:', e.message));
+      generateScamWatchPost().catch(e => console.error('[scam-watch] Scheduled generation failed:', e.message));
     }
   }, 60_000).unref();
 }
@@ -1083,11 +1260,11 @@ function createApp() {
       return res.status(409).json({ error: 'Match already exists' });
     }
     const total = listing.quantity * listing.price;
-    const rate = await getCurrentCommissionRate();
+    const fee = await calculateCommission(listing.oil_type, listing.quantity, total);
     const evidence = await buildMatchEvidence(listing, buyerId, sellerId, listing.quantity, listing.price);
     await run(
-      "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,commission_rate,currency,created_at,evidence) VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?,?)",
-      [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, total*rate, rate, listing.currency, new Date().toISOString(), JSON.stringify(evidence)]
+      "INSERT INTO matches (id,listing_id,buyer_id,seller_id,status,quantity,price_per_unit,total_value,commission,commission_rate,fee_type,currency,created_at,evidence) VALUES (?,?,?,?,'pending',?,?,?,?,?,?,?,?,?)",
+      [generateId('mtc'), listing.id, buyerId, sellerId, listing.quantity, listing.price, total, fee.commission, fee.feeRate, fee.feeType, listing.currency, new Date().toISOString(), JSON.stringify(evidence)]
     );
     res.status(201).json({ success: true });
   }));
@@ -1331,9 +1508,17 @@ function createApp() {
 
     try {
       const baseUrl = `${req.protocol}://${req.get('host')}`;
-      const matchRate = match.commission_rate != null ? match.commission_rate : COMMISSION_RATE;
-      const ratePct = (matchRate * 100).toFixed(matchRate === EARLY_ADOPTER_RATE ? 0 : 1);
-      const isEarly = matchRate === EARLY_ADOPTER_RATE;
+      const matchFeeType = match.fee_type || 'per_mt';
+      const matchRate = match.commission_rate != null ? match.commission_rate : 0;
+      // Determine if early adopter discount was applied by checking if the
+      // stored commission is roughly half what the full rate would produce.
+      const fullCommission = matchFeeType === 'per_mt'
+        ? match.quantity * matchRate
+        : match.total_value * matchRate;
+      const isEarly = fullCommission > 0 && Math.abs(match.commission - fullCommission * EARLY_ADOPTER_DISCOUNT) < 0.01;
+      const rateLabel = matchFeeType === 'per_mt'
+        ? `\u20AC${matchRate.toFixed(2)}/MT`
+        : `${(matchRate * 100).toFixed(2)}%`;
       const session = await stripe.checkout.sessions.create({
         mode: 'payment',
         payment_method_types: ['card'],
@@ -1341,8 +1526,8 @@ function createApp() {
           price_data: {
             currency: match.currency.toLowerCase(),
             product_data: {
-              name: `OilBridge Trade Commission (${ratePct}%${isEarly ? ' — Early Adopter Rate' : ''})`,
-              description: `Commission for match ${match.id} — ${match.quantity.toLocaleString()} units at ${match.price_per_unit} ${match.currency}/unit`,
+              name: `OilBridge Platform Fee (${rateLabel}${isEarly ? ' \u2014 Early Adopter 50% off' : ''})`,
+              description: `Platform fee for match ${match.id} \u2014 ${match.quantity.toLocaleString()} MT at ${match.price_per_unit} ${match.currency}/unit`,
             },
             unit_amount: Math.round(match.commission * 100),
           },
@@ -1574,15 +1759,15 @@ function createApp() {
     await auth(req, res, () => {});
     if (!req.user) return;
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
-    const { userId, reason } = req.body;
+    const { userId, reason, rejectionReason } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     const user = await queryOne('SELECT id, email, company_name FROM users WHERE id = ?', [userId]);
     if (!user) return res.status(404).json({ error: 'User not found' });
-    await run('UPDATE users SET flagged = 1, flag_reason = ?, flagged_at = ? WHERE id = ?',
-        [reason || 'Flagged by admin', new Date().toISOString(), userId]);
+    await run('UPDATE users SET flagged = 1, flag_reason = ?, flagged_at = ?, rejection_reason = ? WHERE id = ?',
+        [reason || 'Flagged by admin', new Date().toISOString(), rejectionReason || null, userId]);
     await run("DELETE FROM sessions WHERE user_id = ?", [userId]);
     await run("UPDATE listings SET status = 'suspended' WHERE user_id = ?", [userId]);
-    console.log(`[scam] Flagged user ${userId} (${user.company_name}): ${reason || 'no reason'}`);
+    console.log(`[scam] Flagged user ${userId} (${user.company_name}): ${reason || 'no reason'} [rejection: ${rejectionReason || 'none'}]`);
     res.json({ success: true });
   }));
 
@@ -1592,7 +1777,7 @@ function createApp() {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ error: 'userId required' });
-    await run('UPDATE users SET flagged = 0, flag_reason = NULL, flagged_at = NULL WHERE id = ?', [userId]);
+    await run('UPDATE users SET flagged = 0, flag_reason = NULL, flagged_at = NULL, rejection_reason = NULL WHERE id = ?', [userId]);
     console.log(`[scam] Unflagged user ${userId}`);
     res.json({ success: true });
   }));
@@ -1605,6 +1790,7 @@ function createApp() {
     res.json(rows.map(r => ({
       id: r.id, email: r.email, companyName: r.company_name,
       companyCountry: r.company_country, flagReason: r.flag_reason,
+      rejectionReason: r.rejection_reason || null,
       flaggedAt: r.flagged_at
     })));
   }));
@@ -1709,7 +1895,8 @@ function createApp() {
       const totalVolumeEur = completedMatches.reduce((sum, m) =>
         sum + (Number(m.total_value) || 0) * (FX_TO_EUR[m.currency] || 1), 0
       );
-      const currentRate = await getCurrentCommissionRate();
+      const earlyAdopterSlotsLeft = Math.max(0, EARLY_ADOPTER_LIMIT - completedDeals);
+      const isEarlyAdopter = completedDeals < EARLY_ADOPTER_LIMIT;
       const monthStart = new Date().toISOString().slice(0, 7) + '-01';
       const dealsThisMonth = Number(((await queryOne("SELECT COUNT(*) as c FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart])) || {}).c || 0);
       const monthMatches = await queryAll("SELECT total_value, currency FROM matches WHERE status = 'completed' AND created_at >= ?", [monthStart]);
@@ -1721,12 +1908,12 @@ function createApp() {
         totalRegistered,
         dealsThisMonth,
         volumeThisMonthEur: Math.round(volumeThisMonthEur),
-        commissionRate: currentRate,
-        earlyAdopterRate: EARLY_ADOPTER_RATE,
-        standardRate: COMMISSION_RATE,
+        feeSchedule: FEE_SCHEDULE,
+        specialtyRate: SPECIALTY_RATE,
+        earlyAdopterDiscount: EARLY_ADOPTER_DISCOUNT,
         earlyAdopterLimit: EARLY_ADOPTER_LIMIT,
-        earlyAdopterSlotsLeft: Math.max(0, EARLY_ADOPTER_LIMIT - completedDeals),
-        earlyAdopterActive: currentRate === EARLY_ADOPTER_RATE
+        earlyAdopterSlotsLeft,
+        earlyAdopterActive: isEarlyAdopter
       });
     } catch (err) {
       console.error('[public-stats]', err.message);
@@ -1933,7 +2120,7 @@ async function restoreFromBackup(backup) {
 
   if (backup.tables.users) {
     for (const r of backup.tables.users) {
-      await insertRow('users', r, ['id','email','password','role','company_name','company_reg','company_country','company_vat','contact_name','contact_phone','contact_position','kyc_status','nda_accepted','documents','created_at','ai_verification','ai_verified_at','stripe_identity_session_id','stripe_identity_status','flagged','flag_reason','flagged_at'], 'id');
+      await insertRow('users', r, ['id','email','password','role','company_name','company_reg','company_country','company_vat','contact_name','contact_phone','contact_position','kyc_status','nda_accepted','documents','created_at','ai_verification','ai_verified_at','stripe_identity_session_id','stripe_identity_status','flagged','flag_reason','flagged_at','rejection_reason'], 'id');
     }
   }
   if (backup.tables.listings) {
@@ -1943,7 +2130,7 @@ async function restoreFromBackup(backup) {
   }
   if (backup.tables.matches) {
     for (const r of backup.tables.matches) {
-      await insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','currency','commission_paid','stripe_session_id','evidence','created_at'], 'id');
+      await insertRow('matches', r, ['id','listing_id','buyer_id','seller_id','status','quantity','price_per_unit','total_value','commission','commission_rate','fee_type','currency','commission_paid','stripe_session_id','evidence','created_at'], 'id');
     }
   }
   if (backup.tables.messages) {
